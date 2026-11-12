@@ -1,0 +1,65 @@
+{{- if (.Values.addonService).enabled }}
+{{- /*
+Not a Helm hook: as post-install/post-upgrade it would only run (and under
+Argo CD as PostSync) after the AddonService is healthy, which it cannot be
+without its database. The name carries a hash of the spec so a changed Job
+replaces the old one instead of hitting the immutable Job template.
+*/ -}}
+{{- $mariadb := index .Values "online-counseling-mariadb" -}}
+{{- $mariadbImage := printf "%s:%s" $mariadb.imageName $mariadb.imageVersion -}}
+{{- $username := include "oriso.addonService.dbUsername" . -}}
+{{- $jobHash := printf "%s\x00%s" $mariadbImage $username | sha256sum | trunc 8 -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: addonservice-db-init-{{ $jobHash }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app: addonservice-db-init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      containers:
+        - name: addonservice-db-init
+          image: {{ $mariadbImage | quote }}
+          imagePullPolicy: {{ include "oriso.imagePullPolicy" . | quote }}
+          env:
+            - name: HOME
+              value: /tmp
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: addonservice-secret
+                  key: SPRING_DATASOURCE_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: addonservice-secret
+                  key: SPRING_DATASOURCE_PASSWORD
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              until mariadb-admin -h mariadb -uroot --password="$MARIADB_ROOT_PASSWORD" ping >/dev/null 2>&1; do
+                echo "waiting for MariaDB"
+                sleep 5
+              done
+              mariadb -h mariadb -uroot --password="$MARIADB_ROOT_PASSWORD" <<SQL
+              CREATE DATABASE IF NOT EXISTS addonservice CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+              CREATE USER IF NOT EXISTS '${DB_USERNAME}'@'%' IDENTIFIED BY '${DB_PASSWORD}';
+              ALTER USER '${DB_USERNAME}'@'%' IDENTIFIED BY '${DB_PASSWORD}';
+              GRANT ALTER, CREATE, CREATE VIEW, DELETE, DROP, INDEX, INSERT, REFERENCES, SELECT, SHOW VIEW, TRIGGER, UPDATE, ALTER ROUTINE, EXECUTE ON addonservice.* TO '${DB_USERNAME}'@'%';
+              FLUSH PRIVILEGES;
+              SQL
+              echo "addonservice database ready"
+{{- end }}

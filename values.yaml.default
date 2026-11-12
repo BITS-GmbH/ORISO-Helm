@@ -519,6 +519,36 @@ tenantService:
   springRabbitmqPort: "5672"
 
 
+# AddonService (ADR-032): discovers add-ons and connects them to ORISO under
+# /service/addons. Off by default; see README "Add-ons" before enabling.
+addonService:
+  enabled: false
+  replicas: 1
+  # Built from https://github.com/BITS-GmbH/ORISO-AddonService. Both are
+  # required when enabled; a tag of the form sha256:<digest> pins by digest.
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: ""
+  imagePullSecrets: []
+  discovery:
+    # Services labelled oriso.io/addon=true in the namespace below.
+    kubernetes: true
+    namespace: "addons"
+    # The namespace must exist before install unless the chart creates it.
+    createNamespace: false
+    # Add-on base URLs used in addition to Kubernetes discovery.
+    staticAddons: []
+  ingress:
+    proxyBodySize: "16m"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "384Mi"
+    limits:
+      memory: "768Mi"
+
+
 # User service
 userService:
   accountInactivity:
