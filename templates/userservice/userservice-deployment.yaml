@@ -347,11 +347,6 @@ spec:
                 configMapKeyRef:
                   key: KEYCLOAK_REALM
                   name: userservice-configmap-env
-            - name: KEYCLOAK_RESOURCE
-              valueFrom:
-                configMapKeyRef:
-                  key: KEYCLOAK_RESOURCE
-                  name: userservice-configmap-env
             - name: MAIL_SERVICE_API_MAILS_SEND
               valueFrom:
                 configMapKeyRef:
