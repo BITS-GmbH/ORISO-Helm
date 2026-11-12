@@ -1,0 +1,14 @@
+{{- if (.Values.addonService).enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: addonservice-configmap-env
+data:
+  SPRING_DATASOURCE_URL: "jdbc:mariadb://mariadb.{{ .Release.Namespace }}:3306/addonservice"
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: {{ .Values.global.springSecurityOAuth2ResourceserverJWTIssuerURI | quote }}
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: {{ .Values.global.springSecurityOAuth2ResourceserverJWTJWKSETURI | quote }}
+  ADDONS_USERSERVICE_BASEURL: "http://userservice.{{ .Release.Namespace }}:8080"
+  ADDONS_DISCOVERY_KUBERNETES: {{ include "oriso.addonService.kubernetesDiscovery" . | quote }}
+  ADDONS_DISCOVERY_NAMESPACE: {{ include "oriso.addonService.discoveryNamespace" . | quote }}
+  ADDONS_DISCOVERY_STATICADDONS: {{ join "," (dig "discovery" "staticAddons" (list) .Values.addonService) | quote }}
+{{- end }}
