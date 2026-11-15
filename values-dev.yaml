@@ -190,3 +190,12 @@ matrix:
   matrixServerName: "matrix.oriso.org"
 matrixrtcAuth:
   membershipReaderUserId: "@matrixrtc-auth:matrix.oriso.org"
+
+# Remove a person whose call access ends (moderator ban, revoked guest seat;
+# ORISO-Admin#1518, ORISO-Frontend#2209) from the running LiveKit call.
+# UserService posts to the gateway's /internal/matrixrtc/evict with the existing
+# call-policy token (matrixrtcAuth.existingSecret.callPolicyTokenKey); the
+# gateway calls LiveKit RemoveParticipant. Needs a gateway image that contains
+# token-service/eviction.js (ORISO-Livekit 16eb072 or later).
+matrixrtcEviction:
+  enabled: true
