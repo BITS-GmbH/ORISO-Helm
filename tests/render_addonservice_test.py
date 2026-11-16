@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render guard for the optional AddonService (ADR-032).
+"""Render guard for the optional AddonService (ADR-034).
 
   1. Off by default: an untouched chart renders none of its resources.
   2. Enabled, it renders the service, its database Job, discovery RBAC limited
@@ -155,6 +155,9 @@ def assert_enabled(chart: str, scratch: str) -> None:
     assert config["ADDONS_DISCOVERY_KUBERNETES"] == "true"
     assert config["ADDONS_DISCOVERY_NAMESPACE"] == "addons"
     assert config["ADDONS_USERSERVICE_BASEURL"] == "http://userservice.addon-test:8080"
+    assert config["ADDONS_TENANTSERVICE_BASEURL"] == "http://tenantservice.addon-test:8081"
+    assert config["ADDONS_LIFECYCLE_ENABLED"] == "true"
+    assert config["SPRING_RABBITMQ_HOST"] == "rabbitmq"
 
     pod = get(documents, "Deployment", "addonservice")["spec"]["template"]["spec"]
     assert pod["serviceAccountName"] == "addonservice"
@@ -165,6 +168,12 @@ def assert_enabled(chart: str, scratch: str) -> None:
     environment = {entry["name"]: entry["valueFrom"] for entry in container["env"]}
     assert environment["ADDONS_TOKEN_PRIVATEKEYPEM"]["secretKeyRef"]["name"] == "addonservice-secret"
     assert environment["SPRING_DATASOURCE_PASSWORD"]["secretKeyRef"]["name"] == "addonservice-secret"
+    assert environment["SPRING_RABBITMQ_PASSWORD"]["secretKeyRef"]["name"] == "addonservice-secret"
+    assert environment["ADDONS_TECHNICALCLIENT_CLIENTSECRET"]["secretKeyRef"] == {
+        "key": "KEYCLOAK_BACKEND_TECHNICAL_CLIENT_SECRET",
+        "name": "keycloak-backend-client-secrets",
+    }
+    assert "ADDONS_TECHNICALCLIENT_TOKENURL" in environment
 
     role = get(documents, "Role", "addonservice-discovery-addon-test")
     assert role["metadata"]["namespace"] == "addons"
@@ -196,6 +205,12 @@ def assert_static_discovery_only(chart: str, scratch: str) -> None:
     )
 
 
+def assert_lifecycle_can_be_turned_off(chart: str, scratch: str) -> None:
+    documents = render(chart, scratch, enabled_values(lifecycle={"enabled": False}))
+    config = get(documents, "ConfigMap", "addonservice-configmap-env")["data"]
+    assert config["ADDONS_LIFECYCLE_ENABLED"] == "false"
+
+
 def assert_refuses_incomplete(chart: str, scratch: str) -> None:
     error = render_error(chart, scratch, enabled_values(image={"repository": "", "tag": ""}))
     assert "addonService.image.repository" in error, error
@@ -224,6 +239,7 @@ def main() -> None:
         assert_missing_section_is_off(chart, temporary_directory)
         assert_enabled(chart, temporary_directory)
         assert_static_discovery_only(chart, temporary_directory)
+        assert_lifecycle_can_be_turned_off(chart, temporary_directory)
         assert_refuses_incomplete(chart, temporary_directory)
     finally:
         shutil.rmtree(temporary_directory, ignore_errors=True)

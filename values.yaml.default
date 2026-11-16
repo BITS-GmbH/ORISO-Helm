@@ -519,7 +519,7 @@ tenantService:
   springRabbitmqPort: "5672"
 
 
-# AddonService (ADR-032): discovers add-ons and connects them to ORISO under
+# AddonService (ADR-034): discovers add-ons and connects them to ORISO under
 # /service/addons. Off by default; see README "Add-ons" before enabling.
 addonService:
   enabled: false
@@ -539,6 +539,11 @@ addonService:
     createNamespace: false
     # Add-on base URLs used in addition to Kubernetes discovery.
     staticAddons: []
+  # Deletion events (user.deleted, session.deleted) from the exchange
+  # oriso.lifecycle, forwarded to the add-ons that subscribe to them. Uses the
+  # platform RabbitMQ (userService.springRabbitmq*, global.secrets.rabbitmq*).
+  lifecycle:
+    enabled: true
   ingress:
     proxyBodySize: "16m"
   resources:

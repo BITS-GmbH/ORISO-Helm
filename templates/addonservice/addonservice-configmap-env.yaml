@@ -11,4 +11,9 @@ data:
   ADDONS_DISCOVERY_KUBERNETES: {{ include "oriso.addonService.kubernetesDiscovery" . | quote }}
   ADDONS_DISCOVERY_NAMESPACE: {{ include "oriso.addonService.discoveryNamespace" . | quote }}
   ADDONS_DISCOVERY_STATICADDONS: {{ join "," (dig "discovery" "staticAddons" (list) .Values.addonService) | quote }}
+  ADDONS_TECHNICALCLIENT_TOKENURL: {{ .Values.global.tokenendpoint | quote }}
+  ADDONS_TENANTSERVICE_BASEURL: "http://tenantservice.{{ .Release.Namespace }}:8081"
+  ADDONS_LIFECYCLE_ENABLED: {{ dig "lifecycle" "enabled" true .Values.addonService | toString | quote }}
+  SPRING_RABBITMQ_HOST: {{ (.Values.userService).springRabbitmqHost | default "rabbitmq" | quote }}
+  SPRING_RABBITMQ_PORT: {{ (.Values.userService).springRabbitmqPort | default "5672" | quote }}
 {{- end }}
