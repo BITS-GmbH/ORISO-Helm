@@ -26,6 +26,8 @@ PUBLISHED_CLIENT = ('user-service', 'user-service-secret')
 EVENTS_CONFIG = {'eventsEnabled': True, 'eventsExpiration': 2592000,
                  'enabledEventTypes': ['LOGIN', 'LOGIN_ERROR', 'LOGOUT', 'REFRESH_TOKEN_ERROR'],
                  'adminEventsEnabled': True, 'adminEventsDetailsEnabled': False}
+# Admin events expire through a realm attribute, not events/config (seconds, same 30 days).
+ADMIN_EVENTS_EXPIRATION = '2592000'
 
 
 def required(env, name):
@@ -253,6 +255,11 @@ def reconcile_events(api):
         raise Error('BACKEND_CLIENT_INVALID: events config')
     # PUT replaces the whole config; keep listeners and anything else as-is.
     api.request('PUT', 'events/config', {**current, **EVENTS_CONFIG})
+    attributes = api.realm().get('attributes') or {}
+    if attributes.get('adminEventsExpiration') != ADMIN_EVENTS_EXPIRATION:
+        # A realm PUT replaces all attributes; send the current ones back.
+        body = json.dumps({'attributes': {**attributes, 'adminEventsExpiration': ADMIN_EVENTS_EXPIRATION}}).encode()
+        api.http.request('PUT', api.base.rstrip('/'), body, api.headers, 'ADMIN_UNAVAILABLE', admin_api=True)
     print('REALM_EVENTS_RECONCILED')
 
 

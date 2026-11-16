@@ -27,6 +27,8 @@ class KeycloakRealmHardeningContractTest(unittest.TestCase):
         self.assertTrue(REALM["enabledEventTypes"])
         self.assertTrue(REALM["adminEventsEnabled"])
         self.assertFalse(REALM["adminEventsDetailsEnabled"])
+        # eventsExpiration covers login events only; admin events need the realm attribute.
+        self.assertEqual(REALM["attributes"]["adminEventsExpiration"], service_clients.ADMIN_EVENTS_EXPIRATION)
 
     def test_access_token_lifespan_stays_until_frontend_refresh_is_fixed(self):
         # A shorter lifespan logs out background tabs; see Helm#535 "Out of scope".

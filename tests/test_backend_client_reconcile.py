@@ -31,6 +31,7 @@ class ReconcileClientsTest(unittest.TestCase):
         self.bad_claims = {}
         self.bad_claims_client = None
         self.admin_permissions = False
+        self.realm_attributes = {'frontendUrl': 'https://keep.example', 'custom': 'kept'}
         self.events_config = {'eventsEnabled': False, 'eventsListeners': ['jboss-logging'], 'enabledEventTypes': [],
                               'adminEventsEnabled': False, 'adminEventsDetailsEnabled': False}
         outer = self
@@ -61,7 +62,10 @@ class ReconcileClientsTest(unittest.TestCase):
                         status = 403
                     else: answer = {'access_token': 'fixture-master-session'}
                 elif path == '/admin/realms/online-beratung' and self.command == 'GET':
-                    answer = {'realm': 'online-beratung', 'adminPermissionsEnabled': outer.admin_permissions}
+                    answer = {'realm': 'online-beratung', 'adminPermissionsEnabled': outer.admin_permissions,
+                              'attributes': dict(outer.realm_attributes)}
+                elif path == '/admin/realms/online-beratung' and self.command == 'PUT':
+                    outer.realm_attributes = payload['attributes']; status = 204  # replaces, like Keycloak
                 elif '/admin/realms/online-beratung/' in path:
                     key = path.split('/admin/realms/online-beratung/')[1]
                     parts = key.split('/')
@@ -429,9 +433,13 @@ class ReconcileClientsTest(unittest.TestCase):
         self.assertEqual(self.events_config,{'eventsEnabled':True,'eventsExpiration':2592000,'eventsListeners':['jboss-logging'],
                          'enabledEventTypes':['LOGIN','LOGIN_ERROR','LOGOUT','REFRESH_TOKEN_ERROR'],
                          'adminEventsEnabled':True,'adminEventsDetailsEnabled':False})
+        self.assertEqual(self.realm_attributes,{'frontendUrl':'https://keep.example','custom':'kept',
+                         'adminEventsExpiration':'2592000'})
+        self.events.clear()
         result=self.run_helper()
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('PUBLISHED_CLIENT_ABSENT',result.stdout)
+        self.assertNotIn(('PUT','/admin/realms/online-beratung'),[e[:2] for e in self.events])
 
     def test_user_service_client_with_rotated_secret_is_kept(self):
         self.clients['us-uuid']={'id':'us-uuid','clientId':'user-service','secret':'operator-rotated-secret'}
@@ -448,5 +456,6 @@ class ReconcileClientsTest(unittest.TestCase):
         result=self.run_helper()
         self.assertNotEqual(result.returncode,0)
         self.assertIn('us-uuid',self.clients);self.assertFalse(self.events_config['eventsEnabled'])
+        self.assertNotIn('adminEventsExpiration',self.realm_attributes)
 
 if __name__=='__main__': unittest.main()
