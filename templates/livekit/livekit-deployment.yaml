@@ -14,6 +14,7 @@
 {{- fail "livekit.terminationGracePeriodSeconds must be an integer" -}}
 {{- end -}}
 {{- $replicas := int $replicasRaw -}}
+{{- $turnCert := include "oriso.livekitTurnCertSecret" . -}}
 {{- $terminationGrace := int $terminationGraceRaw -}}
 {{- if not (has $strategy (list "Recreate" "RollingUpdate")) -}}
 {{- fail "livekit.deploymentStrategy must be Recreate or RollingUpdate" -}}
@@ -102,7 +103,17 @@ spec:
           volumeMounts:
             - name: livekit-config
               mountPath: /etc/livekit
+            {{- if $turnCert }}
+            - name: livekit-turn-tls
+              mountPath: /etc/livekit-turn
+              readOnly: true
+            {{- end }}
       volumes:
+        {{- if $turnCert }}
+        - name: livekit-turn-tls
+          secret:
+            secretName: {{ $turnCert | quote }}
+        {{- end }}
         - name: livekit-config
           secret:
             secretName: {{ (ternary (dig "livekit" "existingConfigSecret" "name" "" $lifecycle) .Values.livekit.existingConfigSecret.name $enabled) | quote }}
