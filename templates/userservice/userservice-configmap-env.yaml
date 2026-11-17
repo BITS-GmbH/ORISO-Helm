@@ -96,7 +96,6 @@ data:
   KEYCLOAK_AUTH_SERVER_URL: {{ .Values.global.keycloak.authServerUrl }}
   KEYCLOAK_REALM: {{ .Values.global.keycloak.realm }}
   KEYCLOAK_PRINCIPAL_ATTRIBUTE: {{ .Values.global.keycloak.principalAttribute }}
-  KEYCLOAK_RESOURCE: {{ .Values.userService.keycloakResource }}
   KEYCLOAK_CORS: "false"
   {{- $adminSubject := required "global.keycloak.serviceAdminSubject must be the actual backend admin service-account UUID" .Values.global.keycloak.serviceAdminSubject }}
   {{- if not (regexMatch "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$" $adminSubject) }}
