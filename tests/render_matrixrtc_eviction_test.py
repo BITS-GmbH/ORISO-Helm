@@ -9,6 +9,8 @@ import os
 import sys
 import unittest
 
+import yaml
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from render_media_lifecycle_test import ENABLED, env, find, pod, render  # noqa: E402
 
@@ -107,6 +109,15 @@ class MatrixRtcEvictionRenderTest(unittest.TestCase):
     def test_non_boolean_fails(self):
         with self.assertRaises(AssertionError):
             render({"matrixrtcEviction.enabled": '"yes"'})
+
+    def test_only_the_dev_overlay_switches_eviction_on(self):
+        # ORISO-Frontend#2209: Dev removes a revoked guest from the running call.
+        # Production keeps the chart default (off) until it is released there.
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        overlay = lambda name: yaml.safe_load(open(os.path.join(root, name))) or {}
+        self.assertIs(overlay("values-dev.yaml")["matrixrtcEviction"]["enabled"], True)
+        self.assertNotIn("matrixrtcEviction", overlay("values-prod.yaml"))
+        self.assertIs(overlay("values.yaml.default")["matrixrtcEviction"]["enabled"], False)
 
 
 if __name__ == "__main__":

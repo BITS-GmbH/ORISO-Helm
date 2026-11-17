@@ -582,8 +582,6 @@ userService:
   image: "ghcr.io/openresilienceinitiative/oriso-userservice:dev"
   serviceURL: "http://userservice:8080"
 
-  keycloakResource: "user-service"
-
   springProfilesActive: "prod"
 
   # Encryption must never be disabled in any environment.

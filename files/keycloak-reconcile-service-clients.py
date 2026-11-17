@@ -20,6 +20,15 @@ spec.loader.exec_module(smtp)
 Error = smtp.ReconcileError
 decode_claims = smtp.decode_claims
 
+# Helm#535: client shipped in realm.json with a secret published in the repo.
+PUBLISHED_CLIENT = ('user-service', 'user-service-secret')
+# Helm#535: must match realm.json. Retention (30 days) pending DPO sign-off.
+EVENTS_CONFIG = {'eventsEnabled': True, 'eventsExpiration': 2592000,
+                 'enabledEventTypes': ['LOGIN', 'LOGIN_ERROR', 'LOGOUT', 'REFRESH_TOKEN_ERROR'],
+                 'adminEventsEnabled': True, 'adminEventsDetailsEnabled': False}
+# Admin events expire through a realm attribute, not events/config (seconds, same 30 days).
+ADMIN_EVENTS_EXPIRATION = '2592000'
+
 
 def required(env, name):
     return smtp.required(env, name)
@@ -226,6 +235,34 @@ def verify_smtp_sync_token(http, config, subject):
         raise Error('BACKEND_CLIENT_TOKEN_CONTRACT_MISMATCH')
 
 
+def retire_published_client(api):
+    name, published = PUBLISHED_CLIENT
+    client = api.find_client(name)
+    if not client:
+        return 'PUBLISHED_CLIENT_ABSENT'
+    cid = quote(client['id'], safe='')
+    secret = api.request('GET', 'clients/' + cid + '/client-secret')
+    # A rotated secret means an operator adopted the client; leave it to them.
+    if not isinstance(secret, dict) or secret.get('value') != published:
+        return 'PUBLISHED_CLIENT_KEPT_ROTATED_SECRET'
+    api.request('DELETE', 'clients/' + cid)
+    return 'PUBLISHED_CLIENT_DELETED'
+
+
+def reconcile_events(api):
+    current = api.request('GET', 'events/config')
+    if not isinstance(current, dict):
+        raise Error('BACKEND_CLIENT_INVALID: events config')
+    # PUT replaces the whole config; keep listeners and anything else as-is.
+    api.request('PUT', 'events/config', {**current, **EVENTS_CONFIG})
+    attributes = api.realm().get('attributes') or {}
+    if attributes.get('adminEventsExpiration') != ADMIN_EVENTS_EXPIRATION:
+        # A realm PUT replaces all attributes; send the current ones back.
+        body = json.dumps({'attributes': {**attributes, 'adminEventsExpiration': ADMIN_EVENTS_EXPIRATION}}).encode()
+        api.http.request('PUT', api.base.rstrip('/'), body, api.headers, 'ADMIN_UNAVAILABLE', admin_api=True)
+    print('REALM_EVENTS_RECONCILED')
+
+
 def reconcile(config):
     api = Admin(config)
     names = (config['TECHNICAL_CLIENT_ID'], config['ADMIN_CLIENT_ID'])
@@ -271,6 +308,8 @@ def reconcile(config):
     print('ADMIN_SERVICE_SUBJECT=' + actual_subjects[1])
     if not config['prepare']:
         reconcile_smtp_sync(api, config, sync_client, management)
+        print(retire_published_client(api))
+        reconcile_events(api)
     if config['retire']:
         api.retire(config['LEGACY_TECHNICAL_USERNAME'])
         api.retire(config['LEGACY_ADMIN_USERNAME'])
