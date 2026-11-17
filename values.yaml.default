@@ -524,11 +524,12 @@ tenantService:
 addonService:
   enabled: false
   replicas: 1
-  # Built from https://github.com/BITS-GmbH/ORISO-AddonService. Both are
-  # required when enabled; a tag of the form sha256:<digest> pins by digest.
+  # Built from https://github.com/OpenResilienceInitiative/ORISO-AddonService
+  # (latest from main, dev from dev, versions from release/addonservice-*).
+  # A tag of the form sha256:<digest> pins by digest.
   image:
-    repository: ""
-    tag: ""
+    repository: "ghcr.io/openresilienceinitiative/oriso-addonservice"
+    tag: "dev"
     pullPolicy: ""
   imagePullSecrets: []
   discovery:

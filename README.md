@@ -191,7 +191,7 @@ historical pseudonymization pipeline targeted an earlier collector.
 ### Add-ons (optional)
 
 Add-ons are optional services with their own backend and UI (ADR-034). The
-[AddonService](https://github.com/BITS-GmbH/ORISO-AddonService) discovers them,
+[AddonService](https://github.com/OpenResilienceInitiative/ORISO-AddonService) discovers them,
 lets a SuperAdmin enable each one per Träger and serves them under
 `/service/addons`. It is off by default (`addonService.enabled: false`); with
 it off, nothing below is rendered.
