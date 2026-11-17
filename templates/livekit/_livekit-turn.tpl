@@ -20,6 +20,11 @@ true
 {{- define "oriso.livekitTurnCertSecret" -}}
 {{- if eq (include "oriso.livekitTurnEnabled" .) "true" -}}
 {{- $turn := .Values.livekit.turn -}}
+{{- if not (kindIs "invalid" $turn.externalTls) -}}
+{{- if not (kindIs "bool" $turn.externalTls) -}}
+{{- fail "livekit.turn.externalTls must be a boolean" -}}
+{{- end -}}
+{{- end -}}
 {{- if and (gt (int $turn.tlsPort) 0) (not $turn.externalTls) -}}
 {{- required "livekit.turn.tlsSecretName is required for TURN/TLS unless livekit.turn.externalTls is true or livekit.turn.tlsPort is 0" $turn.tlsSecretName -}}
 {{- end -}}

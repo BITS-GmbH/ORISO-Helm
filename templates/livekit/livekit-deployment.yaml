@@ -15,6 +15,7 @@
 {{- end -}}
 {{- $replicas := int $replicasRaw -}}
 {{- $turnCert := include "oriso.livekitTurnCertSecret" . -}}
+{{- $turnConfig := include "oriso.livekitTurnConfig" . -}}
 {{- $terminationGrace := int $terminationGraceRaw -}}
 {{- if not (has $strategy (list "Recreate" "RollingUpdate")) -}}
 {{- fail "livekit.deploymentStrategy must be Recreate or RollingUpdate" -}}
@@ -48,6 +49,11 @@ spec:
     metadata:
       labels:
         app: livekit
+      {{- if $turnConfig }}
+      annotations:
+        # LiveKit reads its config only at startup: roll the Pod when TURN changes.
+        oriso.org/livekit-turn-config: {{ printf "%s|%s" $turnConfig $turnCert | sha256sum | quote }}
+      {{- end }}
     spec:
       {{- if $enabled }}
       nodeSelector:

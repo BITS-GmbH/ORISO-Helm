@@ -233,6 +233,28 @@ def main() -> None:
     udp_only = livekit_config(render(*turn_args, "--set", "livekit.turn.tlsPort=0"))["turn"]
     assert "tls_port" not in udp_only and udp_only["udp_port"] == 3478
 
+    def turn_annotation(docs):
+        meta = find_livekit(docs)["spec"]["template"]["metadata"]
+        return (meta.get("annotations") or {}).get("oriso.org/livekit-turn-config")
+
+    assert turn_annotation(documents) is None
+    udp_only_docs = render(*turn_args, "--set", "livekit.turn.tlsPort=0")
+    udp_only_other_domain = render(
+        "--set", "livekit.turn.enabled=true",
+        "--set-string", "livekit.turn.domain=turn2.example.org",
+        "--set", "livekit.turn.tlsPort=0",
+    )
+    assert turn_annotation(udp_only_docs)
+    assert turn_annotation(udp_only_docs) != turn_annotation(udp_only_other_domain)
+    assert turn_annotation(with_turn) not in (None, turn_annotation(udp_only_docs))
+
+    string_external_tls = run_helm(
+        *turn_args, "--set-string", "livekit.turn.externalTls=false",
+        "--set-string", "livekit.turn.tlsSecretName=livekit-turn-tls",
+    )
+    assert string_external_tls.returncode != 0
+    assert "livekit.turn.externalTls must be a boolean" in string_external_tls.stderr
+
     missing_cert = run_helm(*turn_args)
     assert missing_cert.returncode != 0
     assert "livekit.turn.tlsSecretName is required" in missing_cert.stderr
