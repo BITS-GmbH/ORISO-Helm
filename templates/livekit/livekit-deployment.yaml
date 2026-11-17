@@ -69,6 +69,10 @@ spec:
       hostNetwork: {{ not $enabled }}
       dnsPolicy: {{ ternary "ClusterFirst" "ClusterFirstWithHostNet" $enabled }}
       enableServiceLinks: false
+      automountServiceAccountToken: false
+      # hostNetwork (lifecycle off) stays outside Pod Security "baseline"; the container itself runs restricted.
+      securityContext:
+        {{- include "oriso.podSecurityContext" (dict "user" 65532) | nindent 8 }}
       restartPolicy: Always
       terminationGracePeriodSeconds: {{ $terminationGrace }}
       containers:
@@ -106,6 +110,8 @@ spec:
               name: rtc-udp
               protocol: UDP
             {{- end }}
+          securityContext:
+            {{- include "oriso.containerSecurityContext" (dict) | nindent 12 }}
           volumeMounts:
             - name: livekit-config
               mountPath: /etc/livekit

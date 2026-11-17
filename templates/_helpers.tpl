@@ -540,3 +540,44 @@ An unset or empty value means off. Returns "true" or "false".
 {{- end -}}
 {{- ternary "true" "false" $value -}}
 {{- end -}}
+
+{{/*
+Pod securityContext for chart workloads (ORISO-Helm#539). Arguments (dict):
+  user        UID to run as; 0 or unset keeps the image user (root pods, see call site)
+  group       GID, defaults to user
+  fsGroup     group that owns the pod's volumes; changed only when the volume root differs
+  lowPorts    true lets a non-root process listen on ports below 1024 (namespaced, safe sysctl)
+*/}}
+{{- define "oriso.podSecurityContext" -}}
+{{- if .user }}
+runAsNonRoot: true
+runAsUser: {{ .user }}
+runAsGroup: {{ .group | default .user }}
+{{- end }}
+{{- with .fsGroup }}
+fsGroup: {{ . }}
+fsGroupChangePolicy: OnRootMismatch
+{{- end }}
+{{- if .lowPorts }}
+sysctls:
+  - name: net.ipv4.ip_unprivileged_port_start
+    value: "0"
+{{- end }}
+seccompProfile:
+  type: RuntimeDefault
+{{- end -}}
+
+{{/*
+Container securityContext for chart workloads (ORISO-Helm#539). Arguments (dict):
+  readOnly    false when the image writes outside its mounted volumes (reason at call site)
+  add         capabilities to keep after dropping ALL
+*/}}
+{{- define "oriso.containerSecurityContext" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: {{ ternary .readOnly true (hasKey . "readOnly") }}
+capabilities:
+  drop: ["ALL"]
+  {{- with .add }}
+  add: {{ toJson . }}
+  {{- end }}
+{{- end -}}
