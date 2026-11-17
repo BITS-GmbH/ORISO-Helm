@@ -80,6 +80,49 @@ Usage: include "oriso.rejectUrlPlaceholder" (list "name" $value $host)
 {{- end -}}
 
 {{/*
+Shipped-placeholder check for credentials (ORISO-Helm#540): fail the render when
+the value is empty, contains "changeme" in any case, or is shorter than 12
+characters. Usernames pass 0 as the minimum length.
+Usage: include "oriso.requireCredential" (list "global.secrets.x" $value 12)
+*/}}
+{{- define "oriso.requireCredential" -}}
+{{- $name := index . 0 -}}
+{{- $value := toString (index . 1 | default "") -}}
+{{- $minLength := index . 2 -}}
+{{- if eq (trim $value) "" -}}
+{{- fail (printf "%s is empty. Set a real value in secrets.yaml." $name) -}}
+{{- end -}}
+{{- if contains "changeme" (lower $value) -}}
+{{- fail (printf "%s still contains the shipped placeholder \"changeme\". Set a real value in secrets.yaml." $name) -}}
+{{- end -}}
+{{- if lt (len $value) $minLength -}}
+{{- fail (printf "%s is shorter than %d characters. Use a generated value, e.g. openssl rand -base64 24." $name $minLength) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Catch-all for the shipped placeholder (ORISO-Helm#540): walks every value,
+subcharts included, and fails on the first string containing "changeme" in any
+case, naming its full path. No other shipped value contains it.
+Usage: include "oriso.rejectPlaceholderValues" (list "" .Values)
+*/}}
+{{- define "oriso.rejectPlaceholderValues" -}}
+{{- $path := index . 0 -}}
+{{- $value := index . 1 -}}
+{{- if kindIs "map" $value -}}
+{{- range $key, $child := $value -}}
+{{- include "oriso.rejectPlaceholderValues" (list (ternary $key (printf "%s.%s" $path $key) (eq $path "")) $child) -}}
+{{- end -}}
+{{- else if kindIs "slice" $value -}}
+{{- range $index, $child := $value -}}
+{{- include "oriso.rejectPlaceholderValues" (list (printf "%s[%d]" $path $index) $child) -}}
+{{- end -}}
+{{- else if and (kindIs "string" $value) (contains "changeme" (lower $value)) -}}
+{{- fail (printf "%s still contains the shipped placeholder \"changeme\". Set a real value in secrets.yaml." $path) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Shared host[:port] check for global.domainName and the host of explicit URLs:
 DNS labels of 1-63 chars that neither start nor end with a hyphen, no empty
 labels, optional port 1-65535.
