@@ -247,6 +247,12 @@ def main() -> None:
     assert turn_annotation(udp_only_docs)
     assert turn_annotation(udp_only_docs) != turn_annotation(udp_only_other_domain)
     assert turn_annotation(with_turn) not in (None, turn_annotation(udp_only_docs))
+    external_tls_docs = render(
+        *turn_args, "--set", "livekit.turn.externalTls=true", "--set", "livekit.turn.tlsPort=443"
+    )
+    assert turn_annotation(external_tls_docs) not in (
+        None, turn_annotation(with_turn), turn_annotation(udp_only_docs)
+    )
 
     string_external_tls = run_helm(
         *turn_args, "--set-string", "livekit.turn.externalTls=false",
