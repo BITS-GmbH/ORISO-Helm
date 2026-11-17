@@ -247,6 +247,12 @@ def main() -> None:
     assert turn_annotation(udp_only_docs)
     assert turn_annotation(udp_only_docs) != turn_annotation(udp_only_other_domain)
     assert turn_annotation(with_turn) not in (None, turn_annotation(udp_only_docs))
+    renewed = render(
+        *turn_args, "--set-string", "livekit.turn.tlsSecretName=livekit-turn-tls",
+        "--set-string", "livekit.turn.certRevision=2027-02-17",
+    )
+    assert turn_annotation(renewed) not in (None, turn_annotation(with_turn))
+    assert livekit_config(renewed)["turn"] == livekit_config(with_turn)["turn"]
     external_tls_docs = render(
         *turn_args, "--set", "livekit.turn.externalTls=true", "--set", "livekit.turn.tlsPort=443"
     )

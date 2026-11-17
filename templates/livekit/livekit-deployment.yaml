@@ -51,8 +51,8 @@ spec:
         app: livekit
       {{- if $turnConfig }}
       annotations:
-        # LiveKit reads its config only at startup: roll the Pod when TURN changes.
-        oriso.org/livekit-turn-config: {{ printf "%s|%s" $turnConfig $turnCert | sha256sum | quote }}
+        # LiveKit reads config and TURN certificate only at startup: roll on change (certRevision for renewals).
+        oriso.org/livekit-turn-config: {{ printf "%s|%s|%v" $turnConfig $turnCert (.Values.livekit.turn.certRevision | default "") | sha256sum | quote }}
       {{- end }}
     spec:
       {{- if $enabled }}
