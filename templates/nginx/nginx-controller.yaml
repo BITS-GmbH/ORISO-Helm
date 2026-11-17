@@ -26,6 +26,10 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: ingress-nginx
+      # As in the upstream ingress-nginx manifest: www-data (101:82), NET_BIND_SERVICE for
+      # ports 80/443, writable root because the controller rewrites /etc/nginx at runtime.
+      securityContext:
+        {{- include "oriso.podSecurityContext" (dict "user" 101 "group" 82) | nindent 8 }}
       containers:
         - name: controller
           image: registry.k8s.io/ingress-nginx/controller:v1.12.2
@@ -50,6 +54,8 @@ spec:
             - name: metrics
               containerPort: 10254
             {{- end }}
+          securityContext:
+            {{- include "oriso.containerSecurityContext" (dict "readOnly" false "add" (list "NET_BIND_SERVICE")) | nindent 12 }}
           env:
             - name: POD_NAME
               valueFrom:

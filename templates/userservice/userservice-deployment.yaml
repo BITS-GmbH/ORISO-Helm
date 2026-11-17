@@ -45,6 +45,9 @@ spec:
                   app: userservice
               topologyKey: kubernetes.io/hostname
       restartPolicy: Always
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "oriso.podSecurityContext" (dict "user" 65532) | nindent 8 }}
       containers:
         - name: userservice
           image: {{ include "oriso.immutableImage" (list "userService.image" .Values.userService.image) | quote }}
@@ -738,9 +741,15 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
           resources: {}
+          securityContext:
+            {{- include "oriso.containerSecurityContext" (dict) | nindent 12 }}
           volumeMounts:
+            - mountPath: /tmp
+              name: tmp
             - mountPath: /import
               name: userservice-import
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: userservice-import
           emptyDir: {}

@@ -24,8 +24,12 @@ spec:
         app: matrixrtc-auth-policy-gateway
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        {{- include "oriso.podSecurityContext" (dict "user" 65532) | nindent 8 }}
       initContainers:
         - name: wait-for-matrixrtc-membership-token
+          securityContext:
+            {{- include "oriso.containerSecurityContext" (dict) | nindent 12 }}
           image: {{ include "oriso.immutableImage" (list "elementCall.healthcheckImage" .Values.elementCall.healthcheckImage) | quote }}
           imagePullPolicy: {{ include "oriso.imagePullPolicy" . | quote }}
           command:
@@ -177,8 +181,12 @@ spec:
         app: matrixrtc-authorization-service
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        {{- include "oriso.podSecurityContext" (dict "user" 65532) | nindent 8 }}
       initContainers:
         - name: wait-for-redis
+          securityContext:
+            {{- include "oriso.containerSecurityContext" (dict) | nindent 12 }}
           image: {{ printf "%s:%s" (index .Values "online-counseling-redis").imageName (index .Values "online-counseling-redis").imageVersion | quote }}
           imagePullPolicy: {{ include "oriso.imagePullPolicy" . | quote }}
           command:
