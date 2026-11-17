@@ -212,7 +212,7 @@ def main() -> None:
     assert livekit_config(with_turn)["turn"] == {
         "enabled": True,
         "domain": "turn.example.org",
-        "tls_port": 5349,
+        "tls_port": 443,
         "udp_port": 3478,
         "external_tls": False,
         "cert_file": "/etc/livekit-turn/tls.crt",
