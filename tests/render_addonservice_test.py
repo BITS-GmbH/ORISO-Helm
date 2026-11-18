@@ -4,7 +4,10 @@
   1. Off by default: an untouched chart renders none of its resources.
   2. Enabled, it renders the service, its database Job, discovery RBAC limited
      to Services in the add-on namespace, and the /service/addons route.
-  3. It refuses to render without an image, a database password or a PKCS#8
+  3. The database Job name follows its rendered pod template, so any template
+     change (pull policy, image, username, ...) creates a new Job instead of
+     an upgrade rejected because a Job's template is immutable.
+  4. It refuses to render without an image, a database password or a PKCS#8
      signing key, so a half-configured install fails at deploy time.
 """
 
@@ -211,6 +214,50 @@ def assert_lifecycle_can_be_turned_off(chart: str, scratch: str) -> None:
     assert config["ADDONS_LIFECYCLE_ENABLED"] == "false"
 
 
+def db_job(chart: str, scratch: str, values: dict) -> dict:
+    jobs = [document for document in render(chart, scratch, values) if document["kind"] == "Job"]
+    assert len(jobs) == 1, "expected one database Job, got %d" % len(jobs)
+    return jobs[0]
+
+
+def assert_db_job_name_follows_pod_template(chart: str, scratch: str) -> None:
+    def with_global(**global_values) -> dict:
+        values = enabled_values()
+        values["global"].update(global_values)
+        return values
+
+    def with_mariadb_tag(tag: str) -> dict:
+        values = enabled_values()
+        values["online-counseling-mariadb"] = {"imageVersion": tag}
+        return values
+
+    def with_db_username(username: str) -> dict:
+        values = enabled_values()
+        values["global"]["secrets"]["addonServiceDbUsername"] = username
+        return values
+
+    baseline = db_job(chart, scratch, with_global(imagePullPolicy="Always"))
+    name = baseline["metadata"]["name"]
+    assert db_job(chart, scratch, with_global(imagePullPolicy="Always"))["metadata"]["name"] == name, (
+        "identical values must keep the database Job name"
+    )
+
+    variants = {
+        "imagePullPolicy": with_global(imagePullPolicy="IfNotPresent"),
+        "MariaDB image": with_mariadb_tag("render-only-other-tag"),
+        "database username": with_db_username("render-only-other-user"),
+    }
+    for change, values in variants.items():
+        job = db_job(chart, scratch, values)
+        assert job["metadata"]["name"] != name, (
+            "changing the %s changes the pod template but keeps the Job name %s" % (change, name)
+        )
+        assert job["spec"]["template"] != baseline["spec"]["template"], change
+
+    pull_policy = db_job(chart, scratch, variants["imagePullPolicy"])["spec"]["template"]["spec"]
+    assert pull_policy["containers"][0]["imagePullPolicy"] == "IfNotPresent"
+
+
 def assert_refuses_incomplete(chart: str, scratch: str) -> None:
     error = render_error(chart, scratch, enabled_values(image={"repository": "", "tag": ""}))
     assert "addonService.image.repository" in error, error
@@ -240,6 +287,7 @@ def main() -> None:
         assert_enabled(chart, temporary_directory)
         assert_static_discovery_only(chart, temporary_directory)
         assert_lifecycle_can_be_turned_off(chart, temporary_directory)
+        assert_db_job_name_follows_pod_template(chart, temporary_directory)
         assert_refuses_incomplete(chart, temporary_directory)
     finally:
         shutil.rmtree(temporary_directory, ignore_errors=True)
