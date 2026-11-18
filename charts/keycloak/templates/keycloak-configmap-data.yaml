@@ -1,7 +1,15 @@
+{{- $realm := mustFromJson (tpl (.Files.Get "keycloak-resources/realm.json") .) -}}
+{{- $appPolicy := include "oriso.keycloakAppClientUrlPolicy" . | mustFromJson -}}
+{{- range $client := $realm.clients -}}
+{{- if eq $client.clientId "app" -}}
+{{- $_ := set $client "redirectUris" $appPolicy.redirectUris -}}
+{{- $_ := set $client "webOrigins" $appPolicy.webOrigins -}}
+{{- end -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: keycloak-configmap-data
 data:
   realm.json: |-
-{{ tpl (.Files.Get "keycloak-resources/realm.json") . | indent 4 }}
+{{ $realm | mustToPrettyJson | indent 4 }}

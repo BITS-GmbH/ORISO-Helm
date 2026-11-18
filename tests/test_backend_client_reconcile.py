@@ -12,13 +12,23 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+APP_ORIGIN = 'https://installation.example.org'
+APP_POLICY = {'redirectUris': [APP_ORIGIN + '/*'], 'webOrigins': [APP_ORIGIN]}
+LOGOUT_POLICY = 'post.logout.redirect.uris'
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'files/keycloak-reconcile-service-clients.py'
 
 class ReconcileClientsTest(unittest.TestCase):
     def setUp(self):
         self.events = []
-        self.clients = {'realm-management': {'id':'realm-management','clientId':'realm-management'}}
+        self.clients = {
+            'realm-management': {'id': 'realm-management', 'clientId': 'realm-management'},
+            'app-uuid': {'id': 'app-uuid', 'clientId': 'app', 'publicClient': True,
+                         'protocol': 'openid-connect', 'directAccessGrantsEnabled': True,
+                         'standardFlowEnabled': True, 'redirectUris': ['*'], 'webOrigins': ['*'],
+                         'attributes': {'custom': 'unchanged', LOGOUT_POLICY: '+'}},
+        }
         self.users = {'legacy-tech': {'username':'technical','enabled':True},
                       'legacy-admin': {'username':'svc-keycloak-admin','enabled':True},
                       'recovery': {'username':'realmadmin','enabled':True}}
@@ -28,6 +38,7 @@ class ReconcileClientsTest(unittest.TestCase):
         self.client_scopes = {}
         self.fail_delete_path = None
         self.fail_mapping = False
+        self.ignore_app_update = False
         self.bad_claims = {}
         self.bad_claims_client = None
         self.admin_permissions = False
@@ -87,7 +98,14 @@ class ReconcileClientsTest(unittest.TestCase):
                         if self.command == 'PUT': outer.events_config = payload; status = 204
                         else: answer = outer.events_config
                     elif parts[0] == 'clients' and len(parts) == 2:
-                        if self.command == 'PUT': outer.clients[parts[1]].update(payload); status = 204
+                        if self.command == 'PUT':
+                            if not (parts[1] == 'app-uuid' and outer.ignore_app_update):
+                                client = outer.clients[parts[1]]
+                                attributes = payload.get('attributes')
+                                client.update({k: v for k, v in payload.items() if k != 'attributes'})
+                                if attributes is not None:
+                                    client.setdefault('attributes', {}).update(attributes)
+                            status = 204
                         elif self.command == 'DELETE': del outer.clients[parts[1]]; status = 204
                         else: answer = outer.clients[parts[1]]
                     elif parts[0] == 'clients' and parts[2] == 'client-secret':
@@ -159,6 +177,7 @@ class ReconcileClientsTest(unittest.TestCase):
              'KEYCLOAK_ADMIN_USERNAME':'master-recovery','KEYCLOAK_ADMIN_PASSWORD':'synthetic-master-canary',
              'TECHNICAL_CLIENT_ID':'backend-technical','ADMIN_CLIENT_ID':'backend-admin',
              'HUMAN_CLIENT_ID':'app','TECHNICAL_CLIENT_SECRET':'technical-fixture-secret-32-characters',
+             'APP_CLIENT_URL_POLICY':json.dumps(APP_POLICY),
              'ADMIN_CLIENT_SECRET':'admin-fixture-secret-32-characters',
              'ADMIN_SERVICE_SUBJECT':'sa-backend-admin','TECHNICAL_SERVICE_SUBJECT':'sa-backend-technical','PREPARE_ONLY':'false',
              'RETIRE_LEGACY_USERS':'false','LEGACY_TECHNICAL_USERNAME':'technical',
@@ -177,6 +196,54 @@ class ReconcileClientsTest(unittest.TestCase):
             for key in ('directAccessGrantsEnabled','standardFlowEnabled','implicitFlowEnabled','fullScopeAllowed'): self.assertFalse(c[key])
         self.assertIn('sa-backend-technical',result.stdout)
         self.assertTrue(self.users['legacy-tech']['enabled']);self.assertTrue(self.users['legacy-admin']['enabled'])
+    def test_app_redirect_policy_converges_and_preserves_explicit_logout(self):
+        app = self.clients['app-uuid']
+        explicit_logout = APP_ORIGIN + '/admin'
+        app['attributes'][LOGOUT_POLICY] = explicit_logout
+        self.prepare()
+        self.assertEqual(app['redirectUris'], ['*'])
+        self.events.clear()
+
+        result = self.run_helper()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({key: app[key] for key in APP_POLICY}, APP_POLICY)
+        self.assertEqual(app['attributes'], {'custom': 'unchanged', LOGOUT_POLICY: explicit_logout})
+        self.assertTrue(app['standardFlowEnabled'] and app['directAccessGrantsEnabled'])
+        updates = [body for method, path, body in self.events
+                   if method == 'PUT' and path.endswith('/clients/app-uuid')]
+        self.assertEqual(updates, [APP_POLICY])
+
+        self.events.clear()
+        result = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(method == 'PUT' and path.endswith('/clients/app-uuid')
+                             for method, path, _ in self.events))
+
+    def test_explicit_logout_is_narrowed_without_enabling_fallback(self):
+        app = self.clients['app-uuid']
+        app['attributes'][LOGOUT_POLICY] = APP_ORIGIN + '/admin##https://unrelated.example.org'
+        self.prepare()
+
+        result = self.run_helper()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(app['attributes'], {'custom': 'unchanged', LOGOUT_POLICY: APP_ORIGIN + '/admin'})
+        app['attributes'][LOGOUT_POLICY] = 'https://unrelated.example.org'
+        result = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(app['attributes'], {'custom': 'unchanged', LOGOUT_POLICY: '-'})
+
+    def test_app_redirect_readback_failure_is_reported(self):
+        self.prepare()
+        self.ignore_app_update = True
+
+        result = self.run_helper()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('APP_CLIENT_URL_POLICY_READBACK_FAILED', result.stderr)
+        self.assertNotIn('BACKEND_CLIENTS_RECONCILED', result.stdout)
+
     def test_missing_clients_fail_before_changes_outside_prepare(self):
         result=self.run_helper();self.assertNotEqual(result.returncode,0);self.assertEqual(self.mutations(),[])
     def test_wrong_subject_fails_before_any_mutation(self):
