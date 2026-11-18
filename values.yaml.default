@@ -828,8 +828,12 @@ dbMonitoring:
 # Health Dashboard
 healthDashboard:
   ingress:
-    # Public at /health by default; every enabled ingress requires Basic Auth.
+    # Served at /health. With basicAuth: true (default) the whole path needs Basic Auth.
+    # basicAuth: false makes it public without login; the image's public mode
+    # (ORISO_PUBLIC_MODE, on by default since 2.0.17) then withholds the Helm image
+    # inventory, service URLs and raw health bodies (#57). authSecret is ignored then.
     enabled: true
+    basicAuth: true
     # Secret with an nginx `auth` htpasswd entry; set ingress.htpasswd in secrets.yaml to render it.
     authSecret: "health-dashboard-basic-auth"
   image:
