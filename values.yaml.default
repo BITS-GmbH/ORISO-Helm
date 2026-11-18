@@ -419,6 +419,37 @@ livekit:
     # Pre-provision this Secret outside Helm for the same release-history boundary.
     name: "livekit-config-runtime"
     key: "config.yaml"
+  # ICE fallback for restrictive client networks (ORISO-Frontend#1828).
+  # LiveKit offers UDP 50000-60000 and ICE/TCP 7881 on the node's public IP.
+  # A client network that blocks both cannot build a peer connection and the
+  # call ends after ~15-30 s with "ConnectionError: could not establish pc
+  # connection". The embedded TURN server adds relay candidates on ports that
+  # such networks usually allow (UDP 3478, TURN/TLS on 443).
+  turn:
+    enabled: false
+    # Public DNS name that resolves to the LiveKit node's public IP and matches
+    # the certificate in tlsSecretName.
+    domain: ""
+    # TURN over TLS (TCP). 0 disables. LiveKit v1.13.5 always advertises
+    # `turns:<domain>:443?transport=tcp` to clients, whatever tlsPort is
+    # (pkg/service/roommanager.go). So clients reach TURN/TLS only on public
+    # port 443: keep 443 when the node listens directly (hostNetwork, nothing
+    # else may bind 443 there). Any other port needs a forward from public 443
+    # (e.g. an L4 load balancer; with TLS terminated there set externalTls).
+    tlsPort: 443
+    # TURN over UDP. 0 disables.
+    udpPort: 3478
+    # true when a TCP load balancer terminates TLS and forwards to tlsPort.
+    externalTls: false
+    # kubernetes.io/tls Secret for `domain`; required when tlsPort > 0 and
+    # externalTls is false.
+    tlsSecretName: ""
+    # LiveKit loads the TURN certificate only at startup. After every renewal
+    # of tlsSecretName, either bump certRevision (any new string, e.g. the
+    # certificate's notAfter date) and upgrade the release, or run
+    # `kubectl -n <ns> rollout restart deployment/livekit`. Otherwise TURN/TLS
+    # keeps serving the old certificate until it expires.
+    certRevision: ""
 
 # RabbitMQ
 online-counseling-rabbitmq:

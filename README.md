@@ -31,7 +31,10 @@ Copy the secrets template and fill in all credentials:
 cp secrets.yaml.default secrets.yaml
 ```
 
-Open `secrets.yaml` and replace every `changeme` with a real value. Fields to fill in:
+Open `secrets.yaml` and replace every `changeme` with a real value. The install
+fails while any value still contains `changeme`, and the error names it; the
+database, RabbitMQ, Redis, Matrix and Keycloak admin passwords must also be at
+least 12 characters (ORISO-Helm#540). Fields to fill in:
 
 - `global.secrets.*Password` / `*Pass` — database and service passwords
 - `global.secrets.matrixRegistrationSharedSecret` — Matrix shared secret
