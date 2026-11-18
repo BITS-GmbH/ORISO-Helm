@@ -185,7 +185,8 @@ def verify_client_token(http, config, client, subject, admin):
                  and isinstance(resources, dict))
         if admin:
             management = resources.get('realm-management', {}).get('roles')
-            required_roles = {'manage-users', 'view-users', 'query-users', 'view-realm'}
+            # query-clients: UserService's role check lists the realm's clients (ORISO-UserService#1601).
+            required_roles = {'manage-users', 'view-users', 'query-users', 'view-realm', 'query-clients'}
             # Existing view-users is a composite including query-groups.
             valid = (valid and set(resources) == {'realm-management'} and isinstance(management, list)
                      and required_roles <= set(management) <= required_roles | {'query-groups'})
@@ -287,7 +288,7 @@ def reconcile(config):
         raise Error('BACKEND_CLIENT_INVALID: realm-management missing')
     roles = [api.request('GET', 'roles/' + role) for role in ('technical', 'otp-config-admin')]
     management_roles = [api.request('GET', 'clients/' + quote(management['id'], safe='') + '/roles/' + role)
-                        for role in ('manage-users', 'view-users', 'query-users', 'view-realm')]
+                        for role in ('manage-users', 'view-users', 'query-users', 'view-realm', 'query-clients')]
     actual_subjects = []
     for i, name in enumerate(names):
         if not clients[i]:
