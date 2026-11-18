@@ -550,6 +550,42 @@ tenantService:
   springRabbitmqPort: "5672"
 
 
+# AddonService (ADR-034): discovers add-ons and connects them to ORISO under
+# /service/addons. Off by default; see README "Add-ons" before enabling.
+addonService:
+  enabled: false
+  replicas: 1
+  # Built from https://github.com/OpenResilienceInitiative/ORISO-AddonService
+  # (latest from main, dev from dev, versions from release/addonservice-*).
+  # A tag of the form sha256:<digest> pins by digest.
+  image:
+    repository: "ghcr.io/openresilienceinitiative/oriso-addonservice"
+    tag: "dev"
+    pullPolicy: ""
+  imagePullSecrets: []
+  discovery:
+    # Services labelled oriso.io/addon=true in the namespace below.
+    kubernetes: true
+    namespace: "addons"
+    # The namespace must exist before install unless the chart creates it.
+    createNamespace: false
+    # Add-on base URLs used in addition to Kubernetes discovery.
+    staticAddons: []
+  # Deletion events (user.deleted, session.deleted) from the exchange
+  # oriso.lifecycle, forwarded to the add-ons that subscribe to them. Uses the
+  # platform RabbitMQ (userService.springRabbitmq*, global.secrets.rabbitmq*).
+  lifecycle:
+    enabled: true
+  ingress:
+    proxyBodySize: "16m"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "384Mi"
+    limits:
+      memory: "768Mi"
+
+
 # User service
 userService:
   accountInactivity:
