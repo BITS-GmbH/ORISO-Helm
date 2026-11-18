@@ -2605,7 +2605,8 @@
           "manage-users",
           "view-users",
           "query-users",
-          "view-realm"
+          "view-realm",
+          "query-clients"
         ]
       }
     },

@@ -197,7 +197,8 @@ class ReconcileClientsTest(unittest.TestCase):
         result=self.run_helper(RETIRE_LEGACY_USERS='true');self.assertEqual(result.returncode,0,result.stderr)
         tech=self.role_maps['sa-backend-technical'];self.assertEqual([r['name'] for r in tech['realmMappings']],['technical']);self.assertEqual(tech['clientMappings'],{})
         admin=self.role_maps['sa-backend-admin'];self.assertEqual([r['name'] for r in admin['realmMappings']],['otp-config-admin'])
-        self.assertEqual({r['name'] for r in admin['clientMappings']['realm-management']['mappings']},{'manage-users','view-users','query-users','view-realm'})
+        # query-clients: UserService's role check lists the realm's clients (ORISO-UserService#1601).
+        self.assertEqual({r['name'] for r in admin['clientMappings']['realm-management']['mappings']},{'manage-users','view-users','query-users','view-realm','query-clients'})
         self.assertEqual(self.scope_maps['backend-technical'],tech)
         self.assertFalse(self.users['legacy-tech']['enabled']);self.assertFalse(self.users['legacy-admin']['enabled']);self.assertTrue(self.users['recovery']['enabled'])
         disable=[i for i,e in enumerate(self.events) if e[2] and isinstance(e[2],dict) and e[2].get('enabled') is False]
