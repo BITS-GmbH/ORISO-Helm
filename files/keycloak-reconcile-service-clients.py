@@ -28,6 +28,9 @@ EVENTS_CONFIG = {'eventsEnabled': True, 'eventsExpiration': 2592000,
                  'adminEventsEnabled': True, 'adminEventsDetailsEnabled': False}
 # Admin events expire through a realm attribute, not events/config (seconds, same 30 days).
 ADMIN_EVENTS_EXPIRATION = '2592000'
+APP_CLIENT_ID = 'app'
+POST_LOGOUT_REDIRECT_URIS = 'post.logout.redirect.uris'
+DNS_LABEL = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
 
 
 def required(env, name):
@@ -41,6 +44,23 @@ def flag(env, name):
     return value == 'true'
 
 
+def app_client_url_policy(env):
+    failure = 'APP_CLIENT_URL_POLICY_INVALID'
+    try:
+        policy = json.loads(required(env, 'APP_CLIENT_URL_POLICY'))
+    except ValueError:
+        raise Error(failure) from None
+    origins = policy.get('webOrigins') if isinstance(policy, dict) else None
+    if not isinstance(origins, list) or len(origins) != 1:
+        raise Error(failure)
+    origin = origins[0]
+    if not isinstance(origin, str) or not re.fullmatch(rf'https?://{DNS_LABEL}(?:\.{DNS_LABEL})*', origin):
+        raise Error(failure)
+    if policy != {'webOrigins': [origin], 'redirectUris': [origin + '/*']}:
+        raise Error(failure)
+    return policy
+
+
 def configuration(env):
     names = ('KEYCLOAK_URL', 'KEYCLOAK_REALM', 'POD_NAMESPACE', 'KEYCLOAK_ADMIN_USERNAME',
              'KEYCLOAK_ADMIN_PASSWORD', 'TECHNICAL_CLIENT_ID', 'ADMIN_CLIENT_ID', 'HUMAN_CLIENT_ID',
@@ -50,7 +70,7 @@ def configuration(env):
     c['KEYCLOAK_URL'] = smtp.base_url(c['KEYCLOAK_URL'], 'keycloak', c['POD_NAMESPACE'])
     if c['KEYCLOAK_REALM'] == 'master':
         raise Error('BACKEND_CLIENT_CONFIGURATION_INVALID: protected realm')
-    reserved = {c['HUMAN_CLIENT_ID'], 'admin-cli', 'account', 'broker', 'security-admin-console', 'realm-management'}
+    reserved = {APP_CLIENT_ID, c['HUMAN_CLIENT_ID'], 'admin-cli', 'account', 'broker', 'security-admin-console', 'realm-management'}
     ids = [c['TECHNICAL_CLIENT_ID'], c['ADMIN_CLIENT_ID']]
     if ids[0] == ids[1] or any(i in reserved or not re.fullmatch(r'[A-Za-z0-9_-]+', i) for i in ids):
         raise Error('BACKEND_CLIENT_CONFIGURATION_INVALID: client ids')
@@ -72,6 +92,7 @@ def configuration(env):
             raise Error('BACKEND_CLIENT_CONFIGURATION_INVALID: realm admin')
         c['REALM_ADMIN_USERNAME'] = name
     if not c['prepare']:
+        c['app_client_urls'] = app_client_url_policy(env)
         # SMTP sync realm client (Helm#420); preparation leaves it alone.
         c['SMTP_SYNC_CLIENT_ID'] = required(env, 'SMTP_SYNC_CLIENT_ID')
         c['SMTP_SYNC_CLIENT_SECRET'] = required(env, 'SMTP_SYNC_CLIENT_SECRET')
@@ -264,6 +285,54 @@ def reconcile_events(api):
     print('REALM_EVENTS_RECONCILED')
 
 
+def app_client(api):
+    client = api.find_client(APP_CLIENT_ID)
+    if (not client or client.get('clientId') != APP_CLIENT_ID
+            or client.get('protocol') != 'openid-connect' or client.get('publicClient') is not True
+            or not isinstance(client.get('id'), str) or not client['id']):
+        raise Error('APP_CLIENT_URL_POLICY_CLIENT_INVALID')
+    return client
+
+
+def bounded_logout_policy(configured, origin, root_url):
+    # Keycloak's absent value and "+" inherit login redirects. "-" explicitly disables them.
+    if not configured:
+        return configured
+    entries = re.split(r'\s*##\s*', configured)
+    if entries[0] == '-':
+        return configured
+    relative_to_installation = not root_url or root_url == origin or root_url.startswith(origin + '/')
+    bounded = [
+        origin + '/*' if entry == '*' else entry
+        for entry in entries
+        if (entry in ('*', '+', origin) or entry.startswith(origin + '/')
+            or relative_to_installation and entry.startswith('/') and not entry.startswith('//'))
+    ]
+    if bounded == entries:
+        return configured
+    # An explicit list that lost every return must not fall back to the login policy.
+    return '##'.join(dict.fromkeys(bounded)) or '-'
+
+
+def reconcile_app_client_urls(api, client, policy):
+    path = 'clients/' + quote(client['id'], safe='')
+    current = api.request('GET', path)
+    attributes = current.get('attributes') or {}
+    configured = attributes.get(POST_LOGOUT_REDIRECT_URIS)
+    logout = bounded_logout_policy(configured, policy['webOrigins'][0], current.get('rootUrl'))
+    changes = {key: value for key, value in policy.items() if current.get(key) != value}
+    if logout != configured:
+        # Keycloak's client update applies supplied attributes one key at a time.
+        changes['attributes'] = {POST_LOGOUT_REDIRECT_URIS: logout}
+    if changes:
+        api.request('PUT', path, changes)
+        observed = api.request('GET', path)
+        if (any(observed.get(key) != value for key, value in policy.items())
+                or (observed.get('attributes') or {}).get(POST_LOGOUT_REDIRECT_URIS) != logout):
+            raise Error('APP_CLIENT_URL_POLICY_READBACK_FAILED')
+    print('APP_CLIENT_URL_POLICY_RECONCILED')
+
+
 def reconcile(config):
     api = Admin(config)
     names = (config['TECHNICAL_CLIENT_ID'], config['ADMIN_CLIENT_ID'])
@@ -273,6 +342,7 @@ def reconcile(config):
             api.validate_client(client)
     if not config['prepare'] and not all(clients):
         raise Error('BACKEND_CLIENT_PREPARATION_REQUIRED: clients are missing; nothing changed')
+    browser_client = None if config['prepare'] else app_client(api)
     sync_client = None if config['prepare'] else api.find_client(config['SMTP_SYNC_CLIENT_ID'])
     if sync_client:
         api.validate_client(sync_client)
@@ -308,6 +378,7 @@ def reconcile(config):
     print('TECHNICAL_SERVICE_SUBJECT=' + actual_subjects[0])
     print('ADMIN_SERVICE_SUBJECT=' + actual_subjects[1])
     if not config['prepare']:
+        reconcile_app_client_urls(api, browser_client, config['app_client_urls'])
         reconcile_smtp_sync(api, config, sync_client, management)
         print(retire_published_client(api))
         reconcile_events(api)

@@ -27,6 +27,11 @@ IMAGE = "quay.io/keycloak/keycloak@sha256:9b0330756022422149aa6502eb2def8cd47c6e
 INSTALLER = ("synthetic-installer", "synthetic-install-test-credential")
 LABEL = "oriso-helm-test=keycloak"
 READY_SECONDS = 300
+RENDER_APP_ORIGIN = "https://render.oriso.internal"
+APP_URL_POLICY = {
+    "redirectUris": [RENDER_APP_ORIGIN + "/*"],
+    "webOrigins": [RENDER_APP_ORIGIN],
+}
 SECRETS = {
     "TECHNICAL_CLIENT_SECRET": "synthetic-technical-client-secret-0001",
     "ADMIN_CLIENT_SECRET": "synthetic-admin-client-secret-000000001",
@@ -163,6 +168,7 @@ def service_identity_env(base, realm, **extra):
             "KEYCLOAK_ADMIN_USERNAME": INSTALLER[0], "KEYCLOAK_ADMIN_PASSWORD": INSTALLER[1],
             "BOOTSTRAP_ADMIN_USERNAME": INSTALLER[0], "TECHNICAL_CLIENT_ID": "backend-technical",
             "ADMIN_CLIENT_ID": "backend-admin", "HUMAN_CLIENT_ID": "app", "SMTP_SYNC_CLIENT_ID": "smtp-sync",
+            "APP_CLIENT_URL_POLICY": json.dumps(APP_URL_POLICY),
             "RETIRE_LEGACY_USERS": "false", "LEGACY_TECHNICAL_USERNAME": "technical",
             "LEGACY_ADMIN_USERNAME": "svc-keycloak-admin", **SECRETS, **extra}
 

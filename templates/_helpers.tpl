@@ -162,6 +162,12 @@ Usage: include "oriso.validateHost" (list "global.domainName" $hostPort)
 {{- if .Values.global.enableTls }}https{{ else }}http{{ end }}://{{ include "oriso.domainName" . -}}
 {{- end -}}
 
+{{/* ADR-011: App and Admin share one origin. Allow their return paths under that host. */}}
+{{- define "oriso.keycloakAppClientUrlPolicy" -}}
+{{- $origin := include "oriso.publicOrigin" . -}}
+{{- dict "redirectUris" (list (printf "%s/*" $origin)) "webOrigins" (list $origin) | mustToJson -}}
+{{- end -}}
+
 {{/*
 An explicitly set public URL wins but must be absolute http(s), without
 trailing slash or placeholder; empty falls back to the derived URL.
