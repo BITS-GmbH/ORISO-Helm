@@ -49,7 +49,10 @@ print(f"-- synthetic dump of {schema}", flush=True)
 if scenario in {"hanging-dump", "closed-output-dump"}:
     if scenario == "closed-output-dump":
         os.close(sys.stdout.fileno())
-    Path(os.environ["BACKUP_TEST_CHILD"]).write_text(str(os.getpid()))
+    pid_file = Path(os.environ["BACKUP_TEST_CHILD"])
+    pending_pid = pid_file.with_suffix(".tmp")
+    pending_pid.write_text(str(os.getpid()))
+    pending_pid.replace(pid_file)
     time.sleep(30)
 sys.exit(1 if scenario == "partial-dump" and schema == "userservice" else 0)
 """
