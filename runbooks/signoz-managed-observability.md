@@ -221,6 +221,51 @@ retains their IDs. This path works with missing platform telemetry.
 See [Helm #542](https://github.com/OpenResilienceInitiative/ORISO-Helm/issues/542)
 for the remaining platform alerts and external monitoring.
 
+## Dev heartbeat
+
+`signoz.orisoObservability.heartbeat.enabled` defaults to `false`. Before
+enabling it in Dev, provision a receiver outside the monitored cluster and
+configure its incident destination. In SigNoz, create the dedicated channel
+named by `signoz.orisoObservability.heartbeat.channelName` (default
+`oriso-dev-heartbeat`). Use one HTTPS webhook with certificate verification,
+Basic Auth and resolved delivery disabled. Keep its credentials in SigNoz
+and the receiver's secret store. The Helm hook checks the channel and fresh
+collector telemetry before writing assets.
+
+The rule `ORISO dev | SigNoz heartbeat` emits its evaluation timestamp in
+`oriso_evaluated_at`. It returns a timestamp while the named Dev cluster
+collector has supplied a sample within 150 seconds. The rule evaluates every
+minute and requests firing-only repeat notifications every minute.
+The pinned SigNoz Alertmanager groups subsequent deliveries at five-minute
+intervals. Measure the interval in the receiver before enabling incidents.
+
+Require authenticated callbacks for this rule and exact cluster and environment
+labels. Accept a single firing alert with a recent, strictly increasing
+`oriso_evaluated_at` timestamp in Unix seconds. Reject duplicate, stale, foreign
+and resolved messages without resetting the deadline. Set the watchdog to
+raise an incident after 600 seconds without an accepted pulse. Measure this
+from the last accepted receipt. Qualify the receiver with an approved outage
+and recovery test before relying on that deadline.
+
+Use `--heartbeat --heartbeat-channel-name <name>` with the workstation check to
+verify the stored rule, receiver configuration and current collector sample.
+To stop the heartbeat, put the external check in maintenance and set
+`heartbeat.enabled=false` while managed observability still runs. Keep the
+configured channel name for that upgrade. The hook disables the existing rule
+in place and retains its ID even if the telemetry is unavailable.
+
+## External Dev uptime and TLS
+
+From a runner outside the Dev cluster, verify the certificate for
+`signoz.oriso.org` and expect its HTTPS root to redirect to
+`https://dev.oriso.org/signoz/` with a successful final response. Warn when
+the certificate served by the alias has less than 21 days remaining.
+Check `https://dev.oriso.org/signoz/api/v1/health?live=1` independently for
+HTTP 200 and JSON with `"status": "ok"`. This is the SigNoz application
+liveness endpoint. The collector and stored-signals path is covered by the
+separate Dev heartbeat. Keep both checks and their incident delivery outside
+the monitored cluster.
+
 ## API key Secret (created out of band, never in values)
 
 ```text

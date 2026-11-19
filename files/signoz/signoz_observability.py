@@ -30,6 +30,7 @@ CLUSTER_TOKEN = "__ORISO_CLUSTER_NAME__"
 CHANNEL_TOKEN = "__ORISO_CHANNEL_NAME__"
 DEPLOYMENT_IDENTITY_SLUG = "deployment-identity-mismatch"
 NODE_NOT_READY_SLUG = "platform-node-not-ready"
+HEARTBEAT_SLUG = "signoz-heartbeat"
 PLATFORM_SCOPE = ("deployment.environment", "k8s.cluster.name")
 CRITICAL_DEPLOYMENTS = "ingress-nginx-controller|ip-anonymizer|keycloak|userservice|matrix-synapse|frontend"
 DATASTORE_RECEIVER_SCOPE = ',"oriso.signal.source"="datastore-receiver","k8s.namespace.name"="caritas"'
@@ -108,7 +109,7 @@ PLATFORM_SIGNALS = {
         "match": ',"service.name"="cert-manager","namespace"="caritas","name"!=""',
     },
 }
-OPTIONAL_ALERT_SLUGS = {DEPLOYMENT_IDENTITY_SLUG, *PLATFORM_SIGNALS}
+OPTIONAL_ALERT_SLUGS = {DEPLOYMENT_IDENTITY_SLUG, HEARTBEAT_SLUG, *PLATFORM_SIGNALS}
 
 BROWSER_VITALS_SERVICES = ("frontend", "admin")
 # SigNoz stores histogram observations under .count and the CLS gauge under cls.
@@ -626,6 +627,38 @@ def _platform_alert(definition: dict[str, Any], enabled: bool) -> dict[str, Any]
             "type": "promql",
             "spec": _platform_query(slug, ENVIRONMENT_TOKEN, CLUSTER_TOKEN, guarded=True),
         }],
+    }
+    return alert
+
+
+def _heartbeat_alert(
+    environment: str, cluster_name: str, channel_name: str, *, enabled: bool,
+) -> dict[str, Any]:
+    metric = "otelcol_receiver_accepted_metric_points"
+    definition = {
+        "slug": HEARTBEAT_SLUG, "title": "SigNoz heartbeat", "metric": metric,
+        "description": "SigNoz evaluated a recent cluster collector sample. See Operations monitoring, section 1.",
+        "severity": "info", "op": "above", "target": 0, "timeAggregation": "latest", "spaceAggregation": "max",
+    }
+    alert = _replace_tokens(_alert(definition), {ENVIRONMENT_TOKEN: environment, CHANNEL_TOKEN: channel_name})
+    alert["ruleType"] = "promql_rule"
+    alert["disabled"] = not enabled
+    alert["evaluation"]["spec"]["evalWindow"] = "1m"
+    # A repeat interval strictly below the pinned Alertmanager's five-minute
+    # group interval avoids colliding with its strict deduplication boundary.
+    alert["notificationSettings"]["renotify"]["interval"] = "1m"
+    alert["annotations"]["oriso_evaluated_at"] = "{{$value}}"
+    condition = alert["condition"]
+    condition["thresholds"]["spec"][0].update(name="info", matchType="last")
+    selector = (
+        "{" + json.dumps(metric) + ',"deployment.environment"=' + json.dumps(environment)
+        + ',"k8s.cluster.name"=' + json.dumps(cluster_name) + ',"service.name"="oriso-k8s-infra-cluster"}'
+    )
+    grouping = ', '.join(json.dumps(field) for field in PLATFORM_SCOPE)
+    query = f"time() * max by ({grouping}) (present_over_time({selector}[150s]))"
+    condition["compositeQuery"] = {
+        "panelType": "graph", "queryType": "promql",
+        "queries": [{"type": "promql", "spec": {"name": "A", "query": query, "disabled": False}}],
     }
     return alert
 
@@ -1186,6 +1219,33 @@ def require_channel(client: SignozClient, channel_name: str) -> None:
         )
 
 
+def require_heartbeat_channel(client: SignozClient, channel_name: str) -> None:
+    entries = [item for item in _list(client, "/api/v1/channels") if item.get("name") == channel_name]
+    try:
+        entry, = entries
+        if entry.get("type") != "webhook":
+            raise ValueError
+        config = entry["data"]
+        if isinstance(config, str):
+            config = json.loads(config)
+        webhook, = config["webhook_configs"]
+        url = webhook["url"]
+        endpoint = urllib.parse.urlsplit(url)
+        http_config = webhook["http_config"]
+        auth = http_config["basic_auth"]
+        if (
+            endpoint.scheme != "https" or not endpoint.hostname or endpoint.username is not None
+            or endpoint.fragment or "{" in url or "}" in url
+            or webhook.get("send_resolved") is not False
+            or (http_config.get("tls_config") or {}).get("insecure_skip_verify")
+            or not auth.get("username") or not (auth.get("password") or auth.get("password_file"))
+        ):
+            raise ValueError
+    except (AttributeError, KeyError, TypeError, ValueError):
+        # Channel config can contain credentials. Never interpolate it into errors.
+        raise RuntimeError("heartbeat requires a dedicated HTTPS webhook with Basic Auth and resolved delivery off") from None
+
+
 def build_test_rule(alerts: list[dict[str, Any]], slug: str) -> dict[str, Any]:
     """Payload for POST /api/v1/testRule for one catalog alert.
 
@@ -1229,7 +1289,9 @@ def _optional_alert_writable(alert: dict[str, Any], current: dict[str, Any] | No
     if current and slug in OPTIONAL_ALERT_SLUGS and (current.get("labels") or {}).get("managed_by") != "oriso_helm":
         if alert.get("disabled"):
             return False
-        kind = "platform" if slug in PLATFORM_SIGNALS else "deployment identity"
+        kind = "heartbeat" if slug == HEARTBEAT_SLUG else (
+            "platform" if slug in PLATFORM_SIGNALS else "deployment identity"
+        )
         raise RuntimeError(f"{kind} alert name is already in use")
     return True
 
@@ -1340,6 +1402,34 @@ def require_platform_data(client: SignozClient, slug: str, environment: str, clu
     covered = _platform_samples(client, slug, environment, cluster_name, end_ms, guarded=True)
     if not reporting or covered != reporting:
         raise RuntimeError(f"SigNoz platform alert requires complete sampled data for {slug}")
+
+
+def require_heartbeat_signal(
+    client: SignozClient, alert: dict[str, Any], environment: str, cluster_name: str,
+) -> None:
+    end_ms = int(time.time()) // 60 * 60_000
+    query = alert["condition"]["compositeQuery"]["queries"][0]["spec"]
+    response = client.request("POST", "/api/v5/query_range", build_query_range_payload(
+        query, start_ms=end_ms - 60_000, end_ms=end_ms, query_type="promql",
+    ))
+    try:
+        envelope = response["data"]
+        result, = envelope["data"]["results"]
+        if response["status"] != "success" or envelope["type"] != "time_series" or result["queryName"] != "A":
+            raise ValueError
+        bucket, = result["aggregations"]
+        series, = bucket["series"]
+        point, = [item for item in series["values"] if item["timestamp"] == end_ms]
+        labels = {label["key"]["name"]: label["value"] for label in series["labels"]}
+        if (
+            bucket["index"] != 0 or point.get("partial", False) is not False
+            or not _finite_number(point["value"]) or point["value"] != end_ms // 1000
+            or len(series["labels"]) != 2
+            or labels != {"deployment.environment": environment, "k8s.cluster.name": cluster_name}
+        ):
+            raise ValueError
+    except (AttributeError, KeyError, TypeError, ValueError):
+        raise RuntimeError("SigNoz heartbeat requires a current sample from the named Dev collector") from None
 
 
 def _browser_vitals_sql(environment: str, start_ms: int, end_ms: int) -> str:
@@ -1609,6 +1699,7 @@ def validate_live_alert(
     environment: str,
     channel_name: str,
 ) -> dict[str, Any]:
+    promql = expected["ruleType"] == "promql_rule"
     if (
         current.get("alert") != expected["alert"]
         or current.get("schemaVersion") != "v2alpha1"
@@ -1625,6 +1716,12 @@ def validate_live_alert(
         or labels.get("managed_by") != "oriso_helm"
     ):
         raise RuntimeError(f"stored alert label drift: {expected['alert']}")
+    if expected["_orisoSlug"] == HEARTBEAT_SLUG and (
+        settings.get("renotify") != expected["notificationSettings"]["renotify"]
+        or current.get("annotations") != expected["annotations"]
+        or labels != expected["labels"]
+    ):
+        raise RuntimeError("stored SigNoz heartbeat settings drift")
 
     current_condition = current["condition"]
     expected_condition = expected["condition"]
@@ -1637,7 +1734,7 @@ def validate_live_alert(
     current_thresholds = current_condition["thresholds"]
     expected_thresholds = expected_condition["thresholds"]
     keys = ("name", "target", "matchType", "op")
-    if expected["_orisoSlug"] in PLATFORM_SIGNALS:
+    if promql:
         if (
             current.get("disabled") is not expected["disabled"]
             or current.get("alertType") != expected["alertType"]
@@ -1660,7 +1757,7 @@ def validate_live_alert(
 
     current_query = current_condition["compositeQuery"]["queries"][0]["spec"]
     expected_query = expected_condition["compositeQuery"]["queries"][0]["spec"]
-    if expected["_orisoSlug"] in PLATFORM_SIGNALS:
+    if promql:
         composite = current_condition["compositeQuery"]
         if (
             composite.get("queryType") != "promql"
@@ -1855,6 +1952,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable the Dev platform alerts with the existing Slack route",
     )
     parser.add_argument(
+        "--heartbeat",
+        action="store_true",
+        default=os.environ.get("ORISO_HEARTBEAT_ENABLED", "false").lower() == "true",
+        help="Enable the Dev heartbeat on its dedicated external webhook",
+    )
+    parser.add_argument(
+        "--heartbeat-channel-name",
+        default=os.environ.get("ORISO_HEARTBEAT_CHANNEL_NAME", "oriso-dev-heartbeat"),
+        help="Existing SigNoz webhook channel reserved for the heartbeat",
+    )
+    parser.add_argument(
         "--e2e-dashboards",
         action="store_true",
         default=os.environ.get("ORISO_E2E_DASHBOARDS", "false").lower() == "true",
@@ -1896,6 +2004,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.platform_alerts and args.environment != "dev":
         raise RuntimeError("platform alerts require Dev")
+    if args.heartbeat and (
+        args.environment != "dev" or not args.heartbeat_channel_name or args.heartbeat_channel_name == args.channel_name
+    ):
+        raise RuntimeError("heartbeat requires Dev and a separate notification channel")
     dashboards, alerts = load_assets(
         args.assets_dir,
         deployment_identity=args.deployment_identity,
@@ -1930,6 +2042,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    heartbeat = None
+    if args.environment == "dev":
+        heartbeat = _heartbeat_alert(
+            args.environment, args.cluster_name, args.heartbeat_channel_name, enabled=args.heartbeat,
+        )
+    managed_alerts = [*alerts, heartbeat] if heartbeat else alerts
+
     if args.mode == "provision":
         validate_asset_contract(
             dashboards, alerts, environment=args.environment,
@@ -1937,19 +2056,32 @@ def main(argv: list[str] | None = None) -> int:
         )
         # Channels are hand-made; fail before writing anything if it is absent.
         require_channel(client, args.channel_name)
-        existing = _existing_alerts(client, alerts)
-        for alert in alerts:
+        existing = _existing_alerts(client, managed_alerts)
+        for alert in managed_alerts:
             _optional_alert_writable(alert, existing.get(alert["alert"]))
         if args.platform_alerts:
             for slug in PLATFORM_SIGNALS:
                 require_platform_data(client, slug, args.environment, args.cluster_name)
+        if heartbeat and args.heartbeat:
+            require_heartbeat_channel(client, args.heartbeat_channel_name)
+            require_heartbeat_signal(client, heartbeat, args.environment, args.cluster_name)
         upsert_dashboards(client, dashboards)
-        upsert_alerts(client, alerts)
+        upsert_alerts(client, managed_alerts)
 
     if args.mode == "check":
         telemetry = not args.skip_telemetry
     else:
         telemetry = args.conformance
+    if heartbeat:
+        current = _existing_alerts(client, [heartbeat]).get(heartbeat["alert"])
+        if args.heartbeat or (current and (current.get("labels") or {}).get("managed_by") == "oriso_helm"):
+            if not current:
+                raise RuntimeError("managed SigNoz heartbeat is missing")
+            validate_live_alert(current, heartbeat, environment=args.environment, channel_name=args.heartbeat_channel_name)
+            if args.heartbeat:
+                require_heartbeat_channel(client, args.heartbeat_channel_name)
+                if telemetry and args.mode == "check":
+                    require_heartbeat_signal(client, heartbeat, args.environment, args.cluster_name)
     prove_conformance(
         client,
         dashboards,

@@ -194,6 +194,30 @@ def check_platform_alerts() -> None:
         assert result.returncode != 0 and expected in result.stderr, result.stderr
 
 
+def check_heartbeat() -> None:
+    prefix = "signoz.orisoObservability.heartbeat"
+    scope = {"enabled": True, "environment": "dev", "cluster_name": "oriso-dev"}
+    for flags, expected_enabled, expected_channel in (
+        ((), "false", "oriso-dev-heartbeat"),
+        (("--set", f"{prefix}.enabled=true", "--set-string", f"{prefix}.channelName=watchdog"), "true", "watchdog"),
+    ):
+        job = find(render(**scope, extra_args=flags), "Job", "caritas-signoz-observability")
+        env = job["spec"]["template"]["spec"]["containers"][0]["env"]
+        assert {"name": "ORISO_HEARTBEAT_ENABLED", "value": expected_enabled} in env
+        assert {"name": "ORISO_HEARTBEAT_CHANNEL_NAME", "value": expected_channel} in env
+    enabled = ("--set", f"{prefix}.enabled=true")
+    for options, expected in (
+        ({"environment": "pre-dev"}, "heartbeat requires Dev"),
+        ({"collector_enabled": False}, "named Kubernetes collector"),
+        ({"enabled": False}, "managed observability"),
+        ({"extra_args": enabled + ("--set-string", f"{prefix}.channelName=oriso-alerts-slack")},
+         "heartbeat requires a separate notification channel"),
+        ({"extra_args": ("--set-string", f"{prefix}.enabled=false")}, "must be a boolean"),
+    ):
+        result = render_result(**{**scope, "extra_args": enabled, **options})
+        assert result.returncode and expected in result.stderr, result.stderr
+
+
 def browser_schedule_args(environment: str, secret: str = BROWSER_READER_SECRET) -> tuple[str, ...]:
     return (
         "--set", "global.observability.webVitals.enabled=true",
@@ -284,6 +308,7 @@ def main() -> None:
     predev = render(enabled=True)
     check_deployment_identity(predev)
     check_platform_alerts()
+    check_heartbeat()
     config = find(predev, "ConfigMap", "caritas-signoz-observability")
     job = find(predev, "Job", "caritas-signoz-observability")
 

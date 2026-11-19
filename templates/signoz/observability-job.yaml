@@ -3,6 +3,23 @@
 {{- $deploymentIdentity := get $managed "deploymentIdentity" | default dict -}}
 {{- $collector := get .Values "signozCollector" | default dict -}}
 {{- $platform := get $managed "platformAlerts" | default dict -}}
+{{- $heartbeat := get $managed "heartbeat" | default dict -}}
+{{- $heartbeatEnabled := false -}}
+{{- $heartbeatChannel := get $heartbeat "channelName" | default "oriso-dev-heartbeat" -}}
+{{- if hasKey $heartbeat "enabled" -}}
+  {{- $heartbeatEnabled = get $heartbeat "enabled" -}}
+  {{- if not (kindIs "bool" $heartbeatEnabled) -}}
+    {{- fail "signoz.orisoObservability.heartbeat.enabled must be a boolean" -}}
+  {{- end -}}
+{{- end -}}
+{{- if $heartbeatEnabled -}}
+  {{- if not (and (eq .Values.global.observability.deploymentEnvironment "dev") (get $signoz "enabled") (get $managed "enabled") (get $collector "enabled") (get $collector "clusterName")) -}}
+    {{- fail "heartbeat requires Dev, SigNoz, managed observability and a named Kubernetes collector" -}}
+  {{- end -}}
+  {{- if eq $heartbeatChannel (get $managed "channelName" | default "oriso-alerts-slack") -}}
+    {{- fail "heartbeat requires a separate notification channel" -}}
+  {{- end -}}
+{{- end -}}
 {{- $platformEnabled := false -}}
 {{- if hasKey $platform "enabled" -}}
   {{- $platformEnabled = get $platform "enabled" -}}
@@ -83,6 +100,10 @@ spec:
               value: {{ get $collector "clusterName" | quote }}
             - name: ORISO_PLATFORM_ALERTS_ENABLED
               value: {{ $platformEnabled | quote }}
+            - name: ORISO_HEARTBEAT_ENABLED
+              value: {{ $heartbeatEnabled | quote }}
+            - name: ORISO_HEARTBEAT_CHANNEL_NAME
+              value: {{ $heartbeatChannel | quote }}
             - name: ORISO_E2E_DASHBOARDS
               value: {{ get $managed "e2eDashboards" | default false | quote }}
             - name: ORISO_CONFORMANCE_CHECK

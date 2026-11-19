@@ -727,6 +727,10 @@ signoz:
     # Optional Dev platform rules in the managed catalog.
     platformAlerts:
       enabled: false
+    # Optional Dev heartbeat. Its pre-created webhook is separate from Slack.
+    heartbeat:
+      enabled: false
+      channelName: oriso-dev-heartbeat
     deploymentIdentity:
       enabled: false
       # Approved deployment pin and runtime digest set for each Java workload.

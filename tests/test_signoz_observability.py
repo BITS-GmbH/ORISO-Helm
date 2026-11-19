@@ -7,6 +7,7 @@ import importlib.util
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "files" / "signoz" / "signoz_observability.py"
@@ -28,6 +29,48 @@ class AssetContractTest(unittest.TestCase):
             cluster_name="oriso-predev",
             channel_name="oriso-alerts-slack",
         )
+
+    def test_heartbeat_is_bound_to_current_collector_data_and_one_webhook(self) -> None:
+        rule = MODULE._heartbeat_alert("dev", "oriso-dev", "watchdog-only", enabled=True)
+        condition = rule["condition"]
+        query = condition["compositeQuery"]["queries"][0]["spec"]["query"]
+        self.assertIn("time()", query)
+        self.assertIn("otelcol_receiver_accepted_metric_points", query)
+        self.assertIn('"k8s.cluster.name"="oriso-dev"', query)
+        self.assertEqual(rule["annotations"]["oriso_evaluated_at"], "{{$value}}")
+        self.assertFalse(condition.get("alertOnAbsent"))
+        self.assertEqual(condition["thresholds"]["spec"][0]["channels"], ["watchdog-only"])
+        self.assertEqual(rule["notificationSettings"]["renotify"], {
+            "enabled": True, "interval": "1m", "alertStates": ["firing"],
+        })
+
+    def test_heartbeat_webhook_requires_tls_auth_and_firing_only(self) -> None:
+        client = Mock()
+        hook = {
+            "url": "https://receiver.example.invalid/watchdog",
+            "send_resolved": False,
+            "http_config": {"basic_auth": {"username": "fixture", "password": "fixture-only"}},
+        }
+
+        def configure(replacements):
+            client.request.return_value = {
+                "data": [{"name": "watchdog-only", "type": "webhook", "data": json.dumps({
+                    "webhook_configs": [hook | replacements],
+                })}],
+            }
+
+        configure({})
+        MODULE.require_heartbeat_channel(client, "watchdog-only")
+        for replacements in (
+            {"send_resolved": True},
+            {"url": "http://receiver.example.invalid/watchdog"},
+            {"http_config": {}},
+            {"http_config": hook["http_config"] | {"tls_config": {"insecure_skip_verify": True}}},
+        ):
+            with self.subTest(replacements=replacements):
+                configure(replacements)
+                with self.assertRaisesRegex(RuntimeError, "dedicated HTTPS"):
+                    MODULE.require_heartbeat_channel(client, "watchdog-only")
 
     def test_platform_rule_readback_detects_query_evaluation_and_route_drift(self) -> None:
         dashboards, alerts = MODULE.load_assets(ASSETS, platform_alerts=True)

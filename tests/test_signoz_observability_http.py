@@ -45,6 +45,7 @@ class State:
         self.platform_nodes: dict[str, int] = {"node-a": 1, "node-b": 0}
         self.covered_platform_nodes: dict[str, int] = {"node-a": 0, "node-b": 1}
         self.stale_platform_samples = False
+        self.heartbeat_samples = True
         self.missing_platform_companion = False
         self.unreachable_datastore = False
         self.query_results: dict[str, list[dict[str, Any]]] = {}
@@ -153,7 +154,9 @@ class Handler(BaseHTTPRequestHandler):
                 grouping = re.search(r'(?:min|max|sum) by \(([^)]+)\)', expression)[1]
                 fields = json.loads(f"[{grouping}]")
                 raw = expression.split(") (", 1)[1].startswith("present_over_time(")
-                if "k8s.node.condition" in expression:
+                if expression.startswith("time() * "):
+                    nodes = {"fixture": body["end"] // 1000} if self.state.heartbeat_samples else {}
+                elif "k8s.node.condition" in expression:
                     nodes = self.state.platform_nodes if raw else self.state.covered_platform_nodes
                 elif "k8s.volume." in expression:
                     nodes = {} if self.state.missing_platform_companion and not raw else {"fixture": 1 if raw else 3}
@@ -508,6 +511,58 @@ class HttpFlowTest(unittest.TestCase):
         self.state.missing_platform_companion = True
         with self.assertRaisesRegex(RuntimeError, "complete sampled data for platform-pvc-capacity"):
             self._main("--mode", "provision", "--platform-alerts", *args)
+        self.assertEqual(self._counts(), (0, 0, 0, 0))
+
+    def test_heartbeat_preflights_channel_and_signal_and_disables_the_same_rule(self) -> None:
+        dev = ("--environment", "dev", "--cluster-name", "oriso-dev")
+        provision = ("--mode", "provision", *dev)
+        check = ("--mode", "check", "--skip-telemetry", *dev)
+        channel = {
+            "name": "oriso-dev-heartbeat", "type": "webhook",
+            "data": json.dumps({"webhook_configs": [{
+                "url": "https://watchdog.example.invalid/pulse",
+                "send_resolved": False,
+                "http_config": {"basic_auth": {"username": "fixture", "password": "fixture"}},
+            }]}),
+        }
+        with self.assertRaisesRegex(RuntimeError, "dedicated HTTPS webhook"):
+            self._main(*provision, "--heartbeat")
+        self.assertEqual(self._counts(), (0, 0, 0, 0))
+        self.state.channels["heartbeat"] = channel
+        self.state.heartbeat_samples = False
+        with self.assertRaisesRegex(RuntimeError, "requires a current sample"):
+            self._main(*provision, "--heartbeat")
+        self.assertEqual(self._counts(), (0, 0, 0, 0))
+
+        self._main(*provision)
+        self.assertEqual(self._counts(), (3, 6, 0, 0))
+        self.state.heartbeat_samples = True
+        self._main(*provision, "--heartbeat")
+        rule_id, heartbeat = next(
+            (rid, item) for rid, item in self.state.rules.items() if item["alert"] == "ORISO dev | SigNoz heartbeat"
+        )
+        self.assertFalse(heartbeat["disabled"])
+        self.assertEqual(heartbeat["annotations"]["oriso_evaluated_at"], "{{$value}}")
+        self.assertEqual(self._main(*check, "--heartbeat")[0], 0)
+        heartbeat["annotations"]["oriso_evaluated_at"] = "{{ $value }}"
+        with self.assertRaisesRegex(RuntimeError, "stored SigNoz heartbeat settings drift"):
+            self._main(*check, "--heartbeat")
+
+        del self.state.channels["heartbeat"]
+        self.state.heartbeat_samples = False
+        queries_before = self.state.queries
+        self._main(*provision)
+        self.assertTrue(self.state.rules[rule_id]["disabled"])
+        self.assertEqual(self.state.queries, queries_before)
+        self.assertEqual(self._counts(), (3, 7, 0, 0))
+        self.assertEqual(self._main(*check)[0], 0)
+
+    def test_heartbeat_never_uses_the_synthetic_test_rule_api(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "unknown catalog alert"):
+            self._main(
+                "--mode", "test-rule", "--environment", "dev", "--cluster-name", "oriso-dev",
+                "--heartbeat", "--rule", "signoz-heartbeat",
+            )
         self.assertEqual(self._counts(), (0, 0, 0, 0))
 
     def test_platform_rule_reconciles_the_same_id_after_opt_out(self) -> None:
