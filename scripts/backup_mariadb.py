@@ -128,6 +128,8 @@ def main():
         help="time limit per schema dump in seconds (default: %(default)s)",
     )
     args = parser.parse_args()
+    if not args.context.strip() or not args.namespace.strip():
+        parser.error("context and namespace must be non-blank")
     if not args.kubeconfig.is_file():
         parser.error("kubeconfig must be an existing file")
     if not args.check_target and args.output_root is None:

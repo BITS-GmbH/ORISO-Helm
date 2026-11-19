@@ -59,7 +59,8 @@ sys.exit(1 if scenario == "partial-dump" and schema == "userservice" else 0)
 
 
 class MariaDbBackupTest(unittest.TestCase):
-    def backup_invocation(self, scenario, *options, with_output=True):
+    def backup_invocation(self, scenario, *options, with_output=True,
+                          context="audit-dev", namespace="caritas"):
         env = {
             **os.environ,
             "PATH": f"{self.bin_dir}{os.pathsep}{os.environ['PATH']}",
@@ -67,7 +68,7 @@ class MariaDbBackupTest(unittest.TestCase):
             "BACKUP_TEST_SCENARIO": scenario,
             "BACKUP_TEST_CHILD": str(self.child),
         }
-        command = [sys.executable, str(SCRIPT), str(self.kubeconfig), "audit-dev", "caritas"]
+        command = [sys.executable, str(SCRIPT), str(self.kubeconfig), context, namespace]
         if with_output:
             command.append(str(self.output))
         return command + list(options), env
@@ -133,6 +134,20 @@ class MariaDbBackupTest(unittest.TestCase):
                 self.assertNotIn("uid=", result.stdout)
                 self.assertFalse(self.output.exists())
                 self.assertNotIn("exec", [call[6] for call in self.calls_recorded()])
+
+    def test_backup_and_target_check_reject_empty_or_blank_target_before_kubectl(self):
+        for options in ((), ("--check-target",)):
+            for context, namespace in (("", "caritas"), ("  ", "caritas"),
+                                       ("audit-dev", ""), ("audit-dev", "  ")):
+                with self.subTest(context=context, namespace=namespace, options=options):
+                    command, env = self.backup_invocation(
+                        "success", *options, context=context, namespace=namespace,
+                    )
+                    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=15)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("context and namespace must be non-blank", result.stderr)
+                    self.assertFalse(self.calls.exists())
+                    self.assertFalse(self.output.exists())
 
     def test_lookup_failure_never_creates_an_output_directory(self):
         result = self.run_backup("missing-pod")
