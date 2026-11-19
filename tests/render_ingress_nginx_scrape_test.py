@@ -92,9 +92,10 @@ def main() -> None:
     assert INGRESS_RECEIVER not in stock["receivers"]
     assert "metrics/apps" not in stock["service"]["pipelines"]
 
-    disabled = base.render(signoz_enabled=True, infra_enabled=False, extra=external_ingress)
-    assert disabled.returncode
-    assert "global.observability.externalIngressNginxNamespace requires signozCollector.enabled=true" in disabled.stderr
+    disabled = base.documents(
+        base.render(signoz_enabled=True, infra_enabled=False, extra=external_ingress)
+    )
+    assert not any(item["metadata"]["name"] == COLLECTOR for item in disabled)
 
     # Dev turns the scrape on, and the cluster collector may list/watch pods in
     # every namespace (the scrape discovers pods in ingress-nginx).
