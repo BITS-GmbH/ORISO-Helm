@@ -702,12 +702,14 @@ frontend:
 
 nginxController:
   enabled: true
-  replicas: 1
+  # Two replicas, spread over nodes, with a PodDisruptionBudget (ORISO-Helm#544).
+  replicas: 2
 
 # IP anonymization proxy — replaces X-Real-IP/X-Forwarded-For with a
 # session-scoped UUID so no ORISO backend ever sees a real client IP.
 ipAnonymizer:
   enabled: false
+  # Must stay 1 until sessions are shared between pods; the render fails above 1 (ORISO-Helm#544).
   replicas: 1
   image: "ghcr.io/openresilienceinitiative/ip-anonymizer:latest"
 
