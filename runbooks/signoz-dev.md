@@ -233,6 +233,37 @@ retrying. The keep annotation also leaves the live Ingress in place when a
 later render omits the alias. Retire the alias through a separately reviewed
 removal of the Ingress and its public DNS record.
 
+### External HTTPS, TLS expiry and liveness
+
+Run the credential-free probe at least hourly on a runner outside the Dev
+cluster and its hosting provider.
+
+```sh
+python3 scripts/signoz_external_uptime.py
+```
+
+The probe verifies TLS trust and hostname on each connection. It requires the
+public alias to redirect to `https://dev.oriso.org/signoz/` and checks that
+page directly. It also requires HTTP 200 and JSON status `ok` at
+`/signoz/api/v1/health?live=1`. The pinned SigNoz handler checks its
+ClickHouse connection on that path. Stored telemetry and authenticated use
+have their own acceptance checks.
+
+Use the runner's system trust store or pass it with `--ca-file`. The JSON
+output includes UTC certificate expiry for both hosts. The exit codes follow
+the monitoring plugin convention.
+
+| Exit | Result | Meaning |
+| --- | --- | --- |
+| 0 | OK | Both public routes and liveness pass, and both certificates have at least 21 days left. |
+| 1 | WARNING | A certificate has fewer than 21 days left (S7 P2). |
+| 2 | CRITICAL | A public check failed or a certificate has fewer than seven days left (S7 P1 for expiry). |
+| 3 | UNKNOWN | The probe could not initialize its configured trust store. |
+
+Configure the external runner to deliver incidents and recovery to the
+approved operations destination. The SigNoz heartbeat uses a separate
+receiver and tracks whether the collector continues to supply samples.
+
 ## Proof
 
 ClickHouse, from the Dev master (heredoc, because quoting over ssh breaks):
