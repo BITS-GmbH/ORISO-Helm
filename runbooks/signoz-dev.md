@@ -287,14 +287,36 @@ systemctl show oriso-signoz-uptime.service \
 journalctl -u oriso-signoz-uptime.service -n 10 --no-pager
 ```
 
-Use the exit code and corresponding JSON record from a freshly completed
-invocation. A normal process exit with code 0 and an OK record confirms
-recovery. Route codes 1 through 3 according to the table above. Consume the
-unit journal in order and resume ingestion from the last processed cursor.
-Correlate the probe record and manager outcome by invocation ID so a later
-success preserves visibility of a preceding failure. Treat timeouts, startup
-failures, missing records and stale results as probe failures. Monitor missed
-executions from outside the runner so a stopped timer or host is also detected.
+Use the timed result of a completed invocation for incident and recovery
+delivery. Monitor missed executions from outside the runner so a stopped
+timer or host is also detected.
+
+#### Read completed checks for the incident consumer
+
+Run the read-only journal reader from an account with access to the local
+system journal. It reads the two check units above and in the
+[heartbeat receiver runbook](signoz-heartbeat-receiver.md). It uses
+systemd's structured manager events, verified on systemd 255. Keep the
+provided oneshot definitions and their default successful exit status.
+
+```sh
+python3 scripts/signoz_check_journal.py --since '10 minutes ago'
+python3 scripts/signoz_check_journal.py --cursor "$last_accepted_cursor"
+```
+
+Each page contains up to 24 completed starts in journal order. It includes
+normal probe exit statuses, failed starts and timeouts. Missing completion
+details map to `UNKNOWN`. Use machine, boot, unit and invocation ID to
+deduplicate retries. Use the completion cursor as the identifier when
+systemd reports a job failure without an invocation ID. Keep the
+original probe JSON for diagnostics.
+
+Store `next_cursor` only after the destination accepts the page and keep
+fetching while `more` is true. If the start window is empty, keep it until
+the first cursor is available. A missing resume cursor exits 3 so the
+operator can investigate a journal gap. Treat missing or stale results as
+monitoring failures. A successful read with an empty page provides no
+health result.
 
 ## Proof
 
