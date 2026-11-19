@@ -30,8 +30,44 @@ CLUSTER_TOKEN = "__ORISO_CLUSTER_NAME__"
 CHANNEL_TOKEN = "__ORISO_CHANNEL_NAME__"
 DEPLOYMENT_IDENTITY_SLUG = "deployment-identity-mismatch"
 NODE_NOT_READY_SLUG = "platform-node-not-ready"
-OPTIONAL_ALERT_SLUGS = {DEPLOYMENT_IDENTITY_SLUG, NODE_NOT_READY_SLUG}
-NODE_DIMENSIONS = ("deployment.environment", "k8s.cluster.name", "k8s.node.name")
+PLATFORM_SCOPE = ("deployment.environment", "k8s.cluster.name")
+CRITICAL_DEPLOYMENTS = "ingress-nginx-controller|ip-anonymizer|keycloak|userservice|matrix-synapse|frontend"
+# Rules declare the exported signals and the only labels carried to Slack.
+PLATFORM_SIGNALS = {
+    NODE_NOT_READY_SLUG: {
+        "kind": "not-ready", "fields": ("k8s.node.name",),
+        "metrics": ("k8s.node.condition",), "match": ',"condition"="Ready"',
+    },
+    "platform-critical-deployment-unavailable": {
+        "kind": "replicas", "fields": ("k8s.namespace.name", "k8s.deployment.name"),
+        "metrics": ("k8s.deployment.available", "k8s.deployment.desired"),
+        "match": ',"k8s.deployment.name"=~"' + CRITICAL_DEPLOYMENTS + '"',
+    },
+    "platform-deployment-unavailable": {
+        "kind": "replicas", "fields": ("k8s.namespace.name", "k8s.deployment.name"),
+        "metrics": ("k8s.deployment.available", "k8s.deployment.desired"),
+        "match": ',"k8s.deployment.name"!~"' + CRITICAL_DEPLOYMENTS + '"',
+    },
+    "platform-statefulset-unready": {
+        "kind": "replicas", "fields": ("k8s.namespace.name", "k8s.statefulset.name"),
+        "metrics": ("k8s.statefulset.ready_pods", "k8s.statefulset.desired_pods"),
+    },
+    "platform-crashloop-backoff": {
+        "kind": "crashloop", "fields": ("k8s.namespace.name", "k8s.pod.name", "k8s.container.name"),
+        "metrics": ("k8s.container.status.reason",),
+        "match": ',"k8s.container.status.reason"="CrashLoopBackOff"',
+    },
+    "platform-pvc-capacity": {
+        "kind": "pvc", "fields": ("k8s.namespace.name", "k8s.persistentvolumeclaim.name"),
+        "metrics": ("k8s.volume.available", "k8s.volume.capacity"),
+        "match": ',"k8s.volume.type"="persistentVolumeClaim"',
+    },
+    "platform-node-disk-capacity": {
+        "kind": "disk", "fields": ("k8s.node.name",),
+        "metrics": ("k8s.node.filesystem.available", "k8s.node.filesystem.capacity"),
+    },
+}
+OPTIONAL_ALERT_SLUGS = {DEPLOYMENT_IDENTITY_SLUG, *PLATFORM_SIGNALS}
 
 BROWSER_VITALS_SERVICES = ("frontend", "admin")
 # SigNoz stores histogram observations under .count and the CLS gauge under cls.
@@ -328,40 +364,95 @@ def _alert(definition: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _node_readiness_query(environment: str, cluster_name: str, *, guarded: bool) -> dict[str, Any]:
-    selector = (
-        '{"k8s.node.condition","deployment.environment"=' + json.dumps(environment)
-        + ',"k8s.cluster.name"=' + json.dumps(cluster_name) + ',"condition"="Ready"}'
+def _last_in_slot(selector: str, offset: int = 0) -> str:
+    suffix = f" offset {offset}s" if offset else ""
+    return f"last_over_time({selector}[30s]{suffix})"
+
+
+def _paired_replicas(selectors: tuple[str, ...]) -> str:
+    comparisons = []
+    for offset in range(0, 300, 30):
+        ready, desired = (_last_in_slot(selector, offset) for selector in selectors)
+        comparisons.append(f"(({ready} < bool {desired}) and ({ready} >= 0) and ({desired} >= 0))")
+    return " * ".join(comparisons)
+
+
+def _storage_pressure(selectors: tuple[str, ...], grouping: str, limits: tuple[int, ...]) -> str:
+    available, capacity = (_last_in_slot(selector) for selector in selectors)
+    valid = f"({available} >= 0) and ({capacity} > 0) and ({available} <= {capacity})"
+    # Join each mount before aggregating per claim. Claims can have several
+    # mounts. An invalid or unmatched mount makes the claimed result incomplete.
+    severity = " + ".join(
+        f"(({available} * 100) < bool ({capacity} * {100 - limit}))" for limit in limits
     )
-    grouping = ", ".join(json.dumps(dimension) for dimension in NODE_DIMENSIONS)
-    if guarded:
-        clauses = [f"(max_over_time({selector}[2m]) < bool 1)"]
-        for offset in (0, 30, 60, 90):
-            suffix = f" offset {offset}s" if offset else ""
-            clauses.append(f"present_over_time({selector}[30s]{suffix})")
-        expression = f"max by ({grouping}) ({' and '.join(clauses)})"
-        # A replacement node or competing collector can briefly emit a second
-        # stream under the same node name. Keep missing or mixed identity unknown.
-        expression += f" and (count by ({grouping}) (present_over_time({selector}[30s])) == 1)"
+    covered = f"count by ({grouping}) ({valid})"
+    reported = f"count by ({grouping}) ({available} or {capacity})"
+    return f"max by ({grouping}) (({severity}) and ({valid})) and ({covered} == {reported})"
+
+
+def _platform_query(
+    slug: str, environment: str, cluster_name: str, *, guarded: bool,
+) -> dict[str, Any]:
+    signal = PLATFORM_SIGNALS[slug]
+    scope = (
+        '"deployment.environment"=' + json.dumps(environment)
+        + ',"k8s.cluster.name"=' + json.dumps(cluster_name) + signal.get("match", "")
+    )
+    selectors = tuple("{" + json.dumps(metric) + "," + scope + "}" for metric in signal["metrics"])
+    grouping = ", ".join(json.dumps(dimension) for dimension in (*PLATFORM_SCOPE, *signal["fields"]))
+    kind = signal["kind"]
+
+    if not guarded:
+        population = " or ".join(f"present_over_time({selector}[5m])" for selector in selectors)
+        expression = f"max by ({grouping}) ({population})"
+    elif kind in {"pvc", "disk"}:
+        limits = (75, 85, 95) if kind == "pvc" else (85,)
+        expression = _storage_pressure(selectors, grouping, limits)
     else:
-        expression = f"max by ({grouping}) (last_over_time({selector}[5m]))"
+        selector = selectors[0]
+        if kind == "not-ready":
+            clauses = [f"(max_over_time({selector}[2m]) < bool 1)"]
+            for offset in (0, 30, 60, 90):
+                suffix = f" offset {offset}s" if offset else ""
+                clauses.append(f"present_over_time({selector}[30s]{suffix})")
+            violation = " and ".join(clauses)
+        elif kind == "crashloop":
+            violation = f"({_last_in_slot(selector)} > bool 0)"
+        else:
+            violation = _paired_replicas(selectors)
+
+        expression = f"max by ({grouping}) ({violation})"
+        # Count matching resource streams before grouping by display name.
+        # A replaced object can otherwise hide a missing sample from the new one.
+        for incoming in selectors:
+            expression += f" and (count by ({grouping}) (present_over_time({incoming}[30s])) == 1)"
     return {"name": "A", "query": expression, "disabled": False}
 
 
-def _node_alert(definition: dict[str, Any], enabled: bool) -> dict[str, Any]:
+def _platform_alert(definition: dict[str, Any], enabled: bool) -> dict[str, Any]:
+    slug = definition["slug"]
     alert = _alert(definition)
     alert["disabled"] = not enabled
     alert["ruleType"] = "promql_rule"
     alert["evaluation"]["spec"]["evalWindow"] = "1m"
-    alert["notificationSettings"]["groupBy"] = ["environment", "k8s.node.name"]
+    alert["notificationSettings"]["groupBy"] = ["environment", *PLATFORM_SIGNALS[slug]["fields"]]
     condition = alert["condition"]
-    condition["thresholds"]["spec"][0]["matchType"] = "last"
+    threshold = condition["thresholds"]["spec"][0]
+    threshold["matchType"] = "last"
+    threshold["name"] = definition["severity"]
+    if PLATFORM_SIGNALS[slug]["kind"] == "pvc":
+        # SigNoz applies rule labels after the matched threshold's labels.
+        del alert["labels"]["severity"]
+        condition["thresholds"]["spec"] = [
+            {**threshold, "name": name, "target": value, "op": "equal"}
+            for value, name in ((1, "info"), (2, "warning"), (3, "critical"))
+        ]
     condition["compositeQuery"] = {
         "panelType": "graph",
         "queryType": "promql",
         "queries": [{
             "type": "promql",
-            "spec": _node_readiness_query(ENVIRONMENT_TOKEN, CLUSTER_TOKEN, guarded=True),
+            "spec": _platform_query(slug, ENVIRONMENT_TOKEN, CLUSTER_TOKEN, guarded=True),
         }],
     }
     return alert
@@ -393,10 +484,10 @@ def load_assets(
         elif deployment_identity:
             raise RuntimeError("SigNoz deployment identity alert is missing from the catalog")
     if platform_alerts is not None:
-        definition = catalog.get("platformNodeAlert")
-        if not isinstance(definition, dict) or definition.get("slug") != NODE_NOT_READY_SLUG:
-            raise RuntimeError("SigNoz node readiness alert is missing from the catalog")
-        alerts.append(_node_alert(definition, platform_alerts))
+        platform = catalog.get("platformAlerts", [])
+        if len(platform) != len(PLATFORM_SIGNALS) or {item["slug"] for item in platform} != PLATFORM_SIGNALS.keys():
+            raise RuntimeError("SigNoz platform alert catalog is incomplete")
+        alerts.extend(_platform_alert(definition, platform_alerts) for definition in platform)
     return [_dashboard(item) for item in definitions], alerts
 
 
@@ -428,9 +519,9 @@ def materialize_assets(
     }
     materialized_alerts = _replace_tokens(copy.deepcopy(alerts), replacements)
     for alert in materialized_alerts:
-        if alert["_orisoSlug"] == NODE_NOT_READY_SLUG:
-            alert["condition"]["compositeQuery"]["queries"][0]["spec"] = _node_readiness_query(
-                environment, cluster_name, guarded=True,
+        if alert["_orisoSlug"] in PLATFORM_SIGNALS:
+            alert["condition"]["compositeQuery"]["queries"][0]["spec"] = _platform_query(
+                alert["_orisoSlug"], environment, cluster_name, guarded=True,
             )
     return _replace_tokens(copy.deepcopy(dashboards), replacements), materialized_alerts
 
@@ -523,6 +614,7 @@ def validate_asset_contract(
         len(dashboards) != 3 + e2e_count
         or len(alerts) != len(required)
         or slugs != required
+        or (slugs.intersection(PLATFORM_SIGNALS) and not PLATFORM_SIGNALS.keys() <= slugs)
     ):
         raise RuntimeError("SigNoz asset count does not match the ORISO contract")
     encoded = json.dumps(
@@ -571,29 +663,30 @@ def validate_asset_contract(
             raise RuntimeError(f"alert {alert.get('alert')} uses an obsolete schema")
         if alert.get("disabled") and alert["_orisoSlug"] not in OPTIONAL_ALERT_SLUGS:
             raise RuntimeError(f"alert {alert.get('alert')} is disabled")
-        node_alert = alert["_orisoSlug"] == NODE_NOT_READY_SLUG
-        groups = ["environment", "k8s.node.name"] if node_alert else ["environment"]
+        slug = alert["_orisoSlug"]
+        platform = PLATFORM_SIGNALS.get(slug)
+        groups = ["environment", *platform["fields"]] if platform else ["environment"]
         if alert.get("notificationSettings", {}).get("groupBy") != groups:
             raise RuntimeError(
                 f"alert {alert.get('alert')} has unbounded notification grouping"
             )
         composite = alert["condition"]["compositeQuery"]
         query = composite["queries"][0]["spec"]
-        if node_alert:
+        if platform:
             if (
                 environment != "dev"
                 or composite["queryType"] != "promql"
                 or composite["queries"] != [{
-                    "type": "promql", "spec": _node_readiness_query(environment, cluster_name, guarded=True),
+                    "type": "promql", "spec": _platform_query(slug, environment, cluster_name, guarded=True),
                 }]
             ):
-                raise RuntimeError("platform alert query is outside its exact Dev node scope")
+                raise RuntimeError("platform alert query differs from its Dev catalog scope")
         elif environment_filter not in query.get("filter", {}).get("expression", ""):
             raise RuntimeError(
                 f"alert {alert.get('alert')} is not scoped to {environment}"
             )
-        channels = alert["condition"]["thresholds"]["spec"][0]["channels"]
-        if channels != [channel_name]:
+        thresholds = alert["condition"]["thresholds"]["spec"]
+        if any(threshold["channels"] != [channel_name] for threshold in thresholds):
             raise RuntimeError(
                 f"alert {alert.get('alert')} is not routed to the managed channel"
             )
@@ -964,7 +1057,7 @@ def _optional_alert_writable(alert: dict[str, Any], current: dict[str, Any] | No
     if current and slug in OPTIONAL_ALERT_SLUGS and (current.get("labels") or {}).get("managed_by") != "oriso_helm":
         if alert.get("disabled"):
             return False
-        kind = "platform" if slug == NODE_NOT_READY_SLUG else "deployment identity"
+        kind = "platform" if slug in PLATFORM_SIGNALS else "deployment identity"
         raise RuntimeError(f"{kind} alert name is already in use")
     return True
 
@@ -1016,16 +1109,18 @@ def _execute_query(
     return response
 
 
-def _reporting_nodes(
-    client: SignozClient, environment: str, cluster_name: str, end_ms: int, *, guarded: bool,
-) -> set[str]:
+def _platform_samples(
+    client: SignozClient, slug: str, environment: str, cluster_name: str, end_ms: int, *, guarded: bool,
+) -> set[tuple[str, ...]]:
     response = client.request(
         "POST", "/api/v5/query_range",
         build_query_range_payload(
-            _node_readiness_query(environment, cluster_name, guarded=guarded),
+            _platform_query(slug, environment, cluster_name, guarded=guarded),
             start_ms=end_ms - 60_000, end_ms=end_ms, query_type="promql",
         ),
     )
+    fields = PLATFORM_SIGNALS[slug]["fields"]
+    allowed_values = range(4) if guarded and PLATFORM_SIGNALS[slug]["kind"] == "pvc" else (0, 1)
     try:
         envelope = response["data"]
         result, = envelope["data"]["results"]
@@ -1037,13 +1132,12 @@ def _reporting_nodes(
         bucket, = buckets
         if bucket["index"] != 0:
             raise ValueError
-        nodes: set[str] = set()
+        groups: set[tuple[str, ...]] = set()
         for series in _response_list(bucket["series"]):
             latest = [point for point in series["values"] if point["timestamp"] == end_ms]
             if not latest:
                 continue
             point, = latest
-            allowed_values = (0, 1) if guarded else (-1, 0, 1)
             if (
                 point.get("partial", False) is not False
                 or not _finite_number(point["value"])
@@ -1051,28 +1145,29 @@ def _reporting_nodes(
             ):
                 raise ValueError
             labels = {label["key"]["name"]: label["value"] for label in series["labels"]}
-            node = labels.get("k8s.node.name")
+            identity = tuple(labels.get(field) for field in fields)
             if (
-                set(labels) != set(NODE_DIMENSIONS)
+                set(labels) != {*PLATFORM_SCOPE, *fields}
                 or len(labels) != len(series["labels"])
                 or labels["deployment.environment"] != environment
                 or labels["k8s.cluster.name"] != cluster_name
-                or not isinstance(node, str) or not node.strip() or node in nodes
+                or any(not isinstance(value, str) or not value.strip() for value in identity)
+                or identity in groups
             ):
                 raise ValueError
-            nodes.add(node)
+            groups.add(identity)
     except (AttributeError, KeyError, TypeError, ValueError) as error:
-        raise RuntimeError("Unexpected SigNoz node readiness result") from error
-    return nodes
+        raise RuntimeError(f"Unexpected SigNoz platform data for {slug}") from error
+    return groups
 
 
-def require_node_readiness_data(client: SignozClient, environment: str, cluster_name: str) -> None:
+def require_platform_data(client: SignozClient, slug: str, environment: str, cluster_name: str) -> None:
     # Evaluate both queries at the same completed minute, including numeric zero.
     end_ms = int(time.time()) // 60 * 60_000
-    reporting = _reporting_nodes(client, environment, cluster_name, end_ms, guarded=False)
-    covered = _reporting_nodes(client, environment, cluster_name, end_ms, guarded=True)
+    reporting = _platform_samples(client, slug, environment, cluster_name, end_ms, guarded=False)
+    covered = _platform_samples(client, slug, environment, cluster_name, end_ms, guarded=True)
     if not reporting or covered != reporting:
-        raise RuntimeError("SigNoz platform alert requires complete node readiness data for the reporting nodes")
+        raise RuntimeError(f"SigNoz platform alert requires complete sampled data for {slug}")
 
 
 def _browser_vitals_sql(environment: str, start_ms: int, end_ms: int) -> str:
@@ -1368,29 +1463,32 @@ def validate_live_alert(
             raise RuntimeError(f"stored alert absence drift ({key}): {expected['alert']}")
 
     current_thresholds = current_condition["thresholds"]
-    if expected["_orisoSlug"] == NODE_NOT_READY_SLUG and (
-        current.get("disabled") is not expected["disabled"]
-        or current.get("alertType") != expected["alertType"]
-        or current.get("ruleType") != expected["ruleType"]
-        or labels.get("severity") != expected["labels"]["severity"]
-        or current_thresholds.get("kind") != "basic"
-        or len(current_thresholds["spec"]) != 1
-    ):
-        raise RuntimeError(f"stored alert threshold drift: {expected['alert']}")
-    current_threshold = current_thresholds["spec"][0]
-    expected_threshold = expected_condition["thresholds"]["spec"][0]
-    threshold_keys = ("name", "target", "matchType", "op")
-    if expected["_orisoSlug"] == NODE_NOT_READY_SLUG:
-        threshold_keys += ("targetUnit", "recoveryTarget")
-    for key in threshold_keys:
-        if current_threshold.get(key) != expected_threshold.get(key):
+    expected_thresholds = expected_condition["thresholds"]
+    keys = ("name", "target", "matchType", "op")
+    if expected["_orisoSlug"] in PLATFORM_SIGNALS:
+        if (
+            current.get("disabled") is not expected["disabled"]
+            or current.get("alertType") != expected["alertType"]
+            or current.get("ruleType") != expected["ruleType"]
+            or labels.get("severity") != expected["labels"].get("severity")
+            or current_thresholds.get("kind") != "basic"
+            or len(current_thresholds["spec"]) != len(expected_thresholds["spec"])
+        ):
             raise RuntimeError(f"stored alert threshold drift: {expected['alert']}")
-    if current_threshold.get("channels") != [channel_name]:
-        raise RuntimeError(f"stored alert route drift: {expected['alert']}")
+        keys += ("targetUnit", "recoveryTarget")
+        stored = {item["name"]: item for item in current_thresholds["spec"]}
+        pairs = ((stored.get(item["name"], {}), item) for item in expected_thresholds["spec"])
+    else:
+        pairs = [(current_thresholds["spec"][0], expected_thresholds["spec"][0])]
+    for current_threshold, expected_threshold in pairs:
+        if any(current_threshold.get(key) != expected_threshold.get(key) for key in keys):
+            raise RuntimeError(f"stored alert threshold drift: {expected['alert']}")
+        if current_threshold.get("channels") != [channel_name]:
+            raise RuntimeError(f"stored alert route drift: {expected['alert']}")
 
     current_query = current_condition["compositeQuery"]["queries"][0]["spec"]
     expected_query = expected_condition["compositeQuery"]["queries"][0]["spec"]
-    if expected["_orisoSlug"] == NODE_NOT_READY_SLUG:
+    if expected["_orisoSlug"] in PLATFORM_SIGNALS:
         composite = current_condition["compositeQuery"]
         if (
             composite.get("queryType") != "promql"
@@ -1481,8 +1579,8 @@ def prove_conformance(
             channel_name=channel_name,
         )
         if telemetry and not expected.get("disabled"):
-            if expected["_orisoSlug"] == NODE_NOT_READY_SLUG:
-                require_node_readiness_data(client, environment, cluster_name)
+            if expected["_orisoSlug"] in PLATFORM_SIGNALS:
+                require_platform_data(client, expected["_orisoSlug"], environment, cluster_name)
             else:
                 _execute_query(client, query)
         if expected.get("_orisoSlug") == "collector-staleness":
@@ -1582,7 +1680,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--platform-alerts",
         action="store_true",
         default=os.environ.get("ORISO_PLATFORM_ALERTS_ENABLED", "false").lower() == "true",
-        help="Enable the Dev platform readiness alert with its existing Slack route",
+        help="Enable the Dev platform alerts with the existing Slack route",
     )
     parser.add_argument(
         "--e2e-dashboards",
@@ -1671,7 +1769,8 @@ def main(argv: list[str] | None = None) -> int:
         for alert in alerts:
             _optional_alert_writable(alert, existing.get(alert["alert"]))
         if args.platform_alerts:
-            require_node_readiness_data(client, args.environment, args.cluster_name)
+            for slug in PLATFORM_SIGNALS:
+                require_platform_data(client, slug, args.environment, args.cluster_name)
         upsert_dashboards(client, dashboards)
         upsert_alerts(client, alerts)
 

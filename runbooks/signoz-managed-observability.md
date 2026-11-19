@@ -120,8 +120,9 @@ own switch:
 | `signoz.orisoObservability.apiKeySecret.name` / `.key` | `""` / `apiKey` | Existing Secret with the SigNoz API key; the name is required when on. |
 
 With `conformanceCheck` off, a hook run upserts dashboards and rules and reads
-every dashboard, rule, the channel, and the routes back against the catalog. It
-does not need telemetry to flow yet. Turn `conformanceCheck` on only after the
+every dashboard, rule, the channel, and the routes back against the catalog.
+Enabling the optional Dev platform rules also requires their telemetry before
+any writes. Turn `conformanceCheck` on only after the
 UserService diagnostic metrics and the collectors are live in that environment.
 Exercise the approved scenarios for event-driven panels before running the full
 check. Each core dashboard query needs a complete interval with a finite sample
@@ -130,26 +131,44 @@ group keys. A numeric zero is valid. The optional E2E dashboards accept valid
 empty or sparse query results and legacy rows with a blank test ID. Verify their
 contents after a known test run as part of ORISO-E2E#97.
 
-## Dev platform readiness alert
+## Dev platform alerts
 
 `signoz.orisoObservability.platformAlerts.enabled` defaults to `false`. Enable it
-on Dev after the named Kubernetes collector is reporting. The provisioner
-requires four populated 30-second intervals per recently reporting node at
-the same evaluation point. A gap or overlapping streams under a reused node
-name leave that node's condition unknown. A covered healthy node contributes
-zero. Compare the reporting nodes with the cluster node inventory during the
-installed acceptance check.
+on Dev after the named Kubernetes collector is reporting. Each rule must return
+a current result, including a valid zero, for every object recently observed by
+its metrics. The provisioner compares both queries at the same completed
+minute before any writes. Compare the reporting population with the cluster
+inventory during the installed acceptance check.
 
-The Node NotReady rule retains the node name, cluster and environment in its
-PromQL result and groups Slack notifications by environment and node. The
-collector-staleness rule covers loss of collector data. This rule evaluates
-`Ready=False` and `Ready=Unknown` from the observed samples.
+| Rule | Trigger | Severity |
+| --- | --- | --- |
+| Node NotReady | `Ready=False` or `Ready=Unknown` in four consecutive populated 30-second intervals. | Critical |
+| Critical Deployment unavailable | Available replicas below desired in ten consecutive 30-second intervals for `ingress-nginx-controller`, `ip-anonymizer`, `keycloak`, `userservice`, `matrix-synapse`, or `frontend`. | Critical |
+| Deployment unavailable | Same replica check for other Deployments. | Warning |
+| StatefulSet unready | Ready replicas below desired in ten consecutive 30-second intervals. | Warning |
+| Container CrashLoopBackOff | A current `CrashLoopBackOff` condition in the last 30 seconds. | Critical |
+| PVC capacity | Strictly above 75%, 85%, or 95% on its fullest reporting mount. Only the highest applicable tier matches. | Info / Warning / Critical |
+| Node filesystem capacity | Strictly above 85% using the kubelet's node filesystem measurements. | Warning |
+
+Replica checks pair observations for the same resource identity before grouping
+by name. A complete scaled-to-zero or recovered workload contributes zero.
+A missing interval or overlapping streams under a reused name leave the result
+unknown. CrashLoopBackOff reports the Kubernetes condition. A separate alert
+for increases in restart count remains open.
+
+Storage rules compute the share of capacity unavailable to workloads from
+the kubelet's available bytes and total capacity. The node filesystem figure
+includes space the filesystem reserves. The PVC query pairs the capacity and
+available measurements for each mount before grouping by namespace and claim.
+Negative available bytes, zero capacity, or an unmatched measurement leave the
+result unknown. Alerts retain only environment, cluster, and the applicable
+Kubernetes names. The collector-staleness rule covers loss of collector data.
 
 Use `--platform-alerts` for a workstation check of an enabled installation.
 To turn it off, set the value to `false` while managed observability still runs.
-The next hook disables the matching ORISO-managed rule in place and retains
-its ID. This path works with missing node telemetry. The six existing catalog
-rules remain managed. See [Helm #542](https://github.com/OpenResilienceInitiative/ORISO-Helm/issues/542)
+The next hook disables all existing ORISO-managed platform rules in place and
+retains their IDs. This path works with missing platform telemetry.
+See [Helm #542](https://github.com/OpenResilienceInitiative/ORISO-Helm/issues/542)
 for the remaining platform alerts and external monitoring.
 
 ## API key Secret (created out of band, never in values)

@@ -52,17 +52,85 @@
     "severity": "critical",
     "clusterScoped": true
   },
-  "platformNodeAlert": {
-    "slug": "platform-node-not-ready",
-    "title": "Kubernetes node is not ready",
-    "description": "A Dev node reports NotReady or Unknown throughout four successive 30-second sampling intervals. Check its Ready condition, kubelet and node events. See Operations monitoring, section 3.8.",
-    "metric": "k8s.node.condition",
-    "timeAggregation": "latest",
-    "spaceAggregation": "max",
-    "op": "above",
-    "target": 0,
-    "severity": "critical"
-  },
+  "platformAlerts": [
+    {
+      "slug": "platform-node-not-ready",
+      "title": "Kubernetes node is not ready",
+      "description": "A Dev node reports NotReady or Unknown throughout four successive 30-second sampling intervals. Check its Ready condition, kubelet and node events. See Operations monitoring, section 3.8.",
+      "metric": "k8s.node.condition",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "critical"
+    },
+    {
+      "slug": "platform-critical-deployment-unavailable",
+      "title": "Critical Kubernetes deployment lacks available replicas",
+      "description": "A critical deployment stayed below desired replicas over ten 30-second intervals. Check the rollout, pod readiness and events. See Operations monitoring, section 3.3.",
+      "metric": "k8s.deployment.available",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "critical"
+    },
+    {
+      "slug": "platform-deployment-unavailable",
+      "title": "Kubernetes deployment lacks available replicas",
+      "description": "A deployment stayed below desired replicas over ten 30-second intervals. Check the rollout, pod readiness and events. See Operations monitoring, section 3.3.",
+      "metric": "k8s.deployment.available",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "warning"
+    },
+    {
+      "slug": "platform-statefulset-unready",
+      "title": "Kubernetes StatefulSet lacks ready replicas",
+      "description": "A StatefulSet stayed below desired replicas over ten 30-second intervals. Check pod readiness and volume attachment. See Operations monitoring, section 3.3.",
+      "metric": "k8s.statefulset.ready_pods",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "warning"
+    },
+    {
+      "slug": "platform-crashloop-backoff",
+      "title": "Kubernetes container is in CrashLoopBackOff",
+      "description": "Kubernetes reports CrashLoopBackOff for this container. Check its most recent exit and previous pod logs. See Operations monitoring, section 3.3.",
+      "metric": "k8s.container.status.reason",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "critical"
+    },
+    {
+      "slug": "platform-pvc-capacity",
+      "title": "Kubernetes persistent volume is running low on space",
+      "description": "A claim exceeded 75, 85 or 95 percent usage. The information, warning and critical tiers are exclusive. Check volume consumption and expansion options. See Operations monitoring, section 3.7.",
+      "metric": "k8s.volume.available",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "warning"
+    },
+    {
+      "slug": "platform-node-disk-capacity",
+      "title": "Kubernetes node filesystem is running low on space",
+      "description": "The kubelet node filesystem exceeded 85 percent usage. Check images, ephemeral storage and node logs. See Operations monitoring, section 3.8.",
+      "metric": "k8s.node.filesystem.available",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "warning"
+    }
+  ],
   "alerts": [
     {"slug": "provisioning-compensation-failure", "title": "Provisioning compensation is incomplete", "description": "A UserService provisioning rollback left at least one resource unrepaired.", "metric": "userservice.provisioning.compensation.attempts", "timeAggregation": "rate", "spaceAggregation": "sum", "filter": "outcome = 'partial_failure'", "op": "above", "target": 0, "severity": "critical"},
     {"slug": "availability-store-failure", "title": "Live-chat availability store failed", "description": "Redis-backed live-chat availability operations are failing closed.", "metric": "oriso.live_chat.availability.store.operations", "timeAggregation": "rate", "spaceAggregation": "sum", "filter": "outcome = 'failure'", "op": "above", "target": 0, "severity": "critical"},

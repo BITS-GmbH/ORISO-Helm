@@ -44,6 +44,7 @@ class State:
         self.platform_nodes: dict[str, int] = {"node-a": 1, "node-b": 0}
         self.covered_platform_nodes: dict[str, int] = {"node-a": 0, "node-b": 1}
         self.stale_platform_samples = False
+        self.missing_platform_companion = False
         self.query_results: dict[str, list[dict[str, Any]]] = {}
         self.trace_responses: dict[str, dict[str, Any]] = {}
         self.browser_vitals_queries: list[dict[str, Any]] = []
@@ -146,17 +147,26 @@ class Handler(BaseHTTPRequestHandler):
             entry = body["compositeQuery"]["queries"][0]
             query = entry["spec"]
             if entry["type"] == "promql":
-                nodes = (self.state.platform_nodes if "last_over_time" in query["query"]
-                         else self.state.covered_platform_nodes)
+                grouping, expression = query["query"].removeprefix("max by (").split(") (", 1)
+                fields = json.loads(f"[{grouping}]")
+                raw = expression.startswith("present_over_time(")
+                if "k8s.node.condition" in expression:
+                    nodes = self.state.platform_nodes if raw else self.state.covered_platform_nodes
+                elif "k8s.volume." in expression:
+                    nodes = {} if self.state.missing_platform_companion and not raw else {"fixture": 1 if raw else 3}
+                else:
+                    nodes = {"fixture": 1 if raw else 0}
                 self._send(200, {
                     "type": "time_series",
                     "data": {"results": [{"queryName": "A", "aggregations": [{
                         "index": 0,
                         "series": [{
-                            "labels": [{"key": {"name": key}, "value": label} for key, label in (
-                                ("k8s.node.name", name), ("k8s.cluster.name", "oriso-dev"),
-                                ("deployment.environment", "dev"),
-                            )],
+                            "labels": [{
+                                "key": {"name": key}, "value": (
+                                    "oriso-dev" if key == "k8s.cluster.name" else
+                                    "dev" if key == "deployment.environment" else name
+                                ),
+                            } for key in fields],
                             "values": [{"timestamp": body["end"] - (
                                 60_000 if self.state.stale_platform_samples else 0
                             ), "value": value}],
@@ -475,13 +485,19 @@ class HttpFlowTest(unittest.TestCase):
     def test_platform_rule_requires_current_coverage_before_writing_assets(self) -> None:
         args = ("--environment", "dev", "--cluster-name", "oriso-dev")
         self.state.covered_platform_nodes = {"node-a": 0}
-        with self.assertRaisesRegex(RuntimeError, "complete node readiness data"):
+        with self.assertRaisesRegex(RuntimeError, "complete sampled data"):
             self._main("--mode", "provision", "--platform-alerts", *args)
         self.assertEqual(self._counts(), (0, 0, 0, 0))
 
         self.state.covered_platform_nodes = {"node-a": 0, "node-b": 1}
         self.state.stale_platform_samples = True
-        with self.assertRaisesRegex(RuntimeError, "complete node readiness data"):
+        with self.assertRaisesRegex(RuntimeError, "complete sampled data"):
+            self._main("--mode", "provision", "--platform-alerts", *args)
+        self.assertEqual(self._counts(), (0, 0, 0, 0))
+
+        self.state.stale_platform_samples = False
+        self.state.missing_platform_companion = True
+        with self.assertRaisesRegex(RuntimeError, "complete sampled data for platform-pvc-capacity"):
             self._main("--mode", "provision", "--platform-alerts", *args)
         self.assertEqual(self._counts(), (0, 0, 0, 0))
 
@@ -493,20 +509,22 @@ class HttpFlowTest(unittest.TestCase):
             (rid, item) for rid, item in self.state.rules.items()
             if item["alert"] == "ORISO dev | Kubernetes node is not ready"
         )
-        self.assertEqual(self._counts(), (3, 7, 0, 0))
+        self.assertEqual(self._counts(), (3, 6 + len(MODULE.PLATFORM_SIGNALS), 0, 0))
         self.assertFalse(saved["disabled"])
 
         self.state.covered_platform_nodes = {}
         queries_before = self.state.queries
         self._main(*config)
-        self.assertEqual(self._counts(), (3, 7, 0, 0))
+        self.assertEqual(self._counts(), (3, 6 + len(MODULE.PLATFORM_SIGNALS), 0, 0))
         self.assertTrue(self.state.rules[rule_id]["disabled"])
+        disabled = [item for item in self.state.rules.values() if item["disabled"]]
+        self.assertEqual(len(disabled), len(MODULE.PLATFORM_SIGNALS))
         self.assertEqual(self.state.queries, queries_before)
 
         self.state.covered_platform_nodes = {"node-a": 0, "node-b": 1}
         self._main(*config, "--platform-alerts")
         self.assertFalse(self.state.rules[rule_id]["disabled"])
-        self.assertEqual(self._counts(), (3, 7, 0, 0))
+        self.assertEqual(self._counts(), (3, 6 + len(MODULE.PLATFORM_SIGNALS), 0, 0))
 
     def test_platform_rule_rejects_ambiguous_ids(self) -> None:
         args = ("--mode", "provision", "--environment", "dev", "--cluster-name", "oriso-dev")

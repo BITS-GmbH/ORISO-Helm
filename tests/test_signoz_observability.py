@@ -34,7 +34,7 @@ class AssetContractTest(unittest.TestCase):
         scope = {"environment": "dev", "cluster_name": "oriso-dev", "channel_name": "oriso-alerts-slack"}
         dashboards, alerts = MODULE.materialize_assets(dashboards, alerts, **scope)
         MODULE.validate_asset_contract(dashboards, alerts, **scope)
-        expected = alerts[-1]
+        expected = next(item for item in alerts if item["_orisoSlug"] == MODULE.NODE_NOT_READY_SLUG)
         baseline = json.loads(json.dumps(expected))
         def validate(current):
             return MODULE.validate_live_alert(
@@ -56,6 +56,30 @@ class AssetContractTest(unittest.TestCase):
                 value[drift[-1]] = "wrong"
                 with self.assertRaisesRegex(RuntimeError, f"stored alert {error} drift"):
                     validate(current)
+
+    def test_platform_capacity_tiers_are_exclusive_and_routes_are_checked(self) -> None:
+        dashboards, alerts = MODULE.load_assets(ASSETS, platform_alerts=True)
+        scope = {"environment": "dev", "cluster_name": "oriso-dev", "channel_name": "oriso-alerts-slack"}
+        dashboards, alerts = MODULE.materialize_assets(dashboards, alerts, **scope)
+        MODULE.validate_asset_contract(dashboards, alerts, **scope)
+        expected = next(item for item in alerts if item["_orisoSlug"] == "platform-pvc-capacity")
+        thresholds = expected["condition"]["thresholds"]["spec"]
+        self.assertEqual([(item["name"], item["target"], item["op"]) for item in thresholds], [
+            ("info", 1, "equal"), ("warning", 2, "equal"), ("critical", 3, "equal"),
+        ])
+        self.assertNotIn("severity", expected["labels"])
+        current = json.loads(json.dumps(expected))
+        current["labels"]["severity"] = "warning"
+        with self.assertRaisesRegex(RuntimeError, "stored alert threshold drift"):
+            MODULE.validate_live_alert(
+                current, expected, environment=scope["environment"], channel_name=scope["channel_name"],
+            )
+        del current["labels"]["severity"]
+        current["condition"]["thresholds"]["spec"][2]["channels"] = ["another-channel"]
+        with self.assertRaisesRegex(RuntimeError, "stored alert route drift"):
+            MODULE.validate_live_alert(
+                current, expected, environment=scope["environment"], channel_name=scope["channel_name"],
+            )
 
     def test_assets_cover_diagnosis_and_platform_failure_modes(self) -> None:
         self.assertEqual(
