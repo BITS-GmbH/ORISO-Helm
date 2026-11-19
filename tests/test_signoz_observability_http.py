@@ -11,6 +11,7 @@ import os
 import threading
 import time
 import unittest
+from uuid import UUID
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ class State:
         self.browser_vitals_response: dict[str, Any] = {}
         self.browser_vitals_status = 200
         self.redirect_browser_vitals = False
+        self.redirect_dashboard_reads = False
         self.redirect_requests = 0
 
 
@@ -94,6 +96,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/v1/channels":
             self._send(200, list(self.state.channels.values()))
         elif self.path == "/api/v2/dashboards":
+            if self.state.redirect_dashboard_reads:
+                self.send_response(302)
+                self.send_header("Location", "/redirect-target")
+                self.end_headers()
+                return
             items = [
                 {"id": key, "name": value["name"]}
                 for key, value in self.state.dashboards.items()
@@ -123,7 +130,7 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
         elif self.path == "/api/v2/dashboards":
-            identifier = f"dashboard-{len(self.state.dashboards) + 1}"
+            identifier = str(UUID(int=len(self.state.dashboards) + 1))
             self._store_dashboard(identifier, body, 201)
         elif self.path == "/api/v2/rules":
             identifier = f"rule-{len(self.state.rules) + 1}"
@@ -234,6 +241,12 @@ class HttpFlowTest(unittest.TestCase):
             self.state.channel_writes,
             len(self.state.test_rules),
         )
+
+    def test_workstation_check_rejects_redirect_before_following_it(self) -> None:
+        self.state.redirect_dashboard_reads = True
+        with self.assertRaisesRegex(MODULE.SignozHttpError, "302: response body omitted"):
+            self._main("--mode", "check", "--skip-telemetry")
+        self.assertEqual(self.state.redirect_requests, 0)
 
     def test_fake_backend_normalizes_legacy_tag_group_by_to_attribute(self) -> None:
         # Guards the fake against drifting from SigNoz v0.135.1, which stores a
