@@ -102,6 +102,11 @@ PLATFORM_SIGNALS = {
         "metrics": ("keycloak_user_events_total", "up"),
         "match": ',"service.name"="keycloak","k8s_namespace_name"="caritas","service.instance.id"!=""',
     },
+    "platform-certificate-expiring": {
+        "kind": "certificate", "fields": ("namespace", "name"),
+        "metrics": ("certmanager_certificate_expiration_timestamp_seconds",),
+        "match": ',"service.name"="cert-manager","namespace"="caritas","name"!=""',
+    },
 }
 OPTIONAL_ALERT_SLUGS = {DEPLOYMENT_IDENTITY_SLUG, *PLATFORM_SIGNALS}
 
@@ -518,6 +523,24 @@ def _keycloak_login_spike(login: str, scrape: str, grouping: str, *, guarded: bo
     return f"((({recent_failures}) > bool (5 * {baseline}))) and ({covered})"
 
 
+def _certificate_expiry(selector: str, scrape: str, grouping: str) -> str:
+    targets = ', '.join(json.dumps(field) for field in (*PLATFORM_SCOPE, "service.instance.id"))
+    reported = f"last_over_time({selector}[150s])"
+    scrape_ok = f"max by ({targets}) (last_over_time({scrape}[150s]) == 1)"
+    # Zero means cert-manager has no NotAfter. A real past timestamp still
+    # represents an expired certificate. All recent streams must be usable.
+    valid = f"(({reported} > 0) and ({reported} < +Inf)) and on ({targets}) ({scrape_ok})"
+    earliest = f"min by ({grouping}) ({valid})"
+    latest = f"max by ({grouping}) ({valid})"
+    coverage = f"count by ({grouping}) ({valid}) == count by ({grouping}) ({reported})"
+    issuers = grouping + ', "issuer_name", "issuer_kind", "issuer_group"'
+    one_issuer = f"count by ({grouping}) (count by ({issuers}) ({reported})) == 1"
+    return (
+        f"(({earliest} - time()) < bool {21 * 86400})"
+        f" and ({earliest} == {latest}) and ({coverage}) and ({one_issuer})"
+    )
+
+
 def _platform_query(
     slug: str, environment: str, cluster_name: str, *, guarded: bool,
 ) -> dict[str, Any]:
@@ -549,6 +572,9 @@ def _platform_query(
         expression = _storage_pressure(selectors, grouping, limits)
     elif kind == "ingress":
         expression = _ingress_error_rate(selectors[0], grouping)
+    elif kind == "certificate":
+        scrape = '{"up",' + scope + ',"service.name"="cert-manager","service.instance.id"!=""}'
+        expression = _certificate_expiry(selectors[0], scrape, grouping)
     else:
         selector = selectors[0]
         if kind == "not-ready":

@@ -171,7 +171,8 @@ def check_platform_alerts() -> None:
     flag = ("--set", "signoz.orisoObservability.platformAlerts.enabled=true")
     app = ("--set", "global.observability.appMetrics=true")
     db = ("--set", "global.observability.dbMetrics=true")
-    args = flag + app + db
+    certs = ("--set-string", "global.observability.externalCertManagerNamespace=cert-manager")
+    args = flag + app + db + certs
     docs = render(enabled=True, environment="dev", cluster_name="oriso-dev", extra_args=args)
     job = find(docs, "Job", "caritas-signoz-observability")
     env = job["spec"]["template"]["spec"]["containers"][0]["env"]
@@ -182,6 +183,7 @@ def check_platform_alerts() -> None:
         ({"collector_enabled": False}, "named Kubernetes collector"),
         ({"cluster_name": ""}, "named Kubernetes collector"),
         ({"enabled": False}, "managed observability"),
+        ({"extra_args": flag + app + db}, "platform alerts require externalCertManagerNamespace"),
         ({"extra_args": flag + app}, "platform alerts require appMetrics and dbMetrics"),
         ({"extra_args": flag + db}, "platform alerts require appMetrics and dbMetrics"),
         ({"extra_args": ("--set-string", "signoz.orisoObservability.platformAlerts.enabled=false")},
@@ -289,7 +291,7 @@ def main() -> None:
     catalog = yaml.safe_load(config["data"]["observability-catalog.json"])
     assert len(catalog["dashboards"]) == 3
     assert len(catalog["alerts"]) == 6
-    assert len(catalog["platformAlerts"]) == 15
+    assert len(catalog["platformAlerts"]) == 16
 
     annotations = job["metadata"]["annotations"]
     assert "post-install" in annotations["helm.sh/hook"]

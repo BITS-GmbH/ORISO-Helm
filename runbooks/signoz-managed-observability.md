@@ -136,7 +136,8 @@ contents after a known test run as part of ORISO-E2E#97.
 `signoz.orisoObservability.platformAlerts.enabled` defaults to `false`. Enable it
 on Dev after the Kubernetes collector, ingress-nginx app scrape, and data store
 metrics are reporting. The chart requires both `global.observability.appMetrics`
-and `global.observability.dbMetrics` to enable these rules.
+and `global.observability.dbMetrics` to enable these rules. It also requires
+`global.observability.externalCertManagerNamespace` for certificate discovery.
 Each rule must return a current result, including a valid zero, for
 every eligible object observed by its metrics. The provisioner compares both
 queries at the same completed minute before any writes. Compare the reporting
@@ -154,6 +155,7 @@ population with the cluster inventory during the installed acceptance check.
 | Ingress 5xx rate | Strictly more than 2% of observed requests over five minutes, grouped by ingress namespace and name. | Critical |
 | Data store reachability | No successful observation of MariaDB, MongoDB, RabbitMQ or Redis for five minutes, with continuous collector coverage. Each service has its own rule. | Critical |
 | Keycloak login failures | More than five times the usual failed-login count over ten minutes. The reference is the previous hour, excluding the evaluated ten minutes. | Warning |
+| TLS certificate expiry | Less than 21 days until expiry, including certificates whose expiry has already passed, grouped by Certificate namespace and name. | Warning |
 | PVC capacity | Strictly above 75%, 85%, or 95% on its fullest reporting mount. Only the highest applicable tier matches. | Info / Warning / Critical |
 | Node filesystem capacity | Strictly above 85% using the kubelet's node filesystem measurements. | Warning |
 
@@ -193,6 +195,16 @@ reference count per ten minutes has a floor of one, so with a quiet
 reference the alert starts at six observed failures. A newly observed error
 counter can contribute its initial value when its scrape target was already
 healthy before the window. The alert carries only the cluster and environment.
+
+The Dev overlay discovers the cert-manager controller pods on their
+`http-metrics` port. The existing pod discovery permission covers the
+controller namespace. The collector retains the expiration gauge for
+Certificates in the release namespace and the scrape's own `up` series.
+The rule needs a recent successful scrape from each reporting instance and
+agreement on the issuer and expiry. It treats a zero timestamp, unavailable
+scrape and conflicting issuer streams as unknown. Compare the reported
+Certificate names with the Dev inventory during installed acceptance. The
+external S7 probe checks the TLS certificate actually served by the ingress.
 
 Storage rules compute the share of capacity unavailable to workloads from
 the kubelet's available bytes and total capacity. The node filesystem figure

@@ -20,6 +20,9 @@
   {{- if not (and (eq (include "oriso.appMetrics.enabled" .) "true") (eq (include "oriso.dbMetrics.enabled" .) "true")) -}}
     {{- fail "platform alerts require appMetrics and dbMetrics" -}}
   {{- end -}}
+  {{- if not .Values.global.observability.externalCertManagerNamespace -}}
+    {{- fail "platform alerts require externalCertManagerNamespace for certificate metrics" -}}
+  {{- end -}}
 {{- end -}}
 {{- if and (get $signoz "enabled" | default false) (get $managed "enabled" | default false) }}
 {{- $name := printf "%s-signoz-observability" .Release.Name -}}

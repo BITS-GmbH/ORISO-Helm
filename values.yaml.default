@@ -41,6 +41,8 @@ global:
     # Optional cluster-owned ingress-nginx controller to scrape. Environment
     # overlays must opt in because this chart does not install the controller.
     externalIngressNginxNamespace: ""
+    # Optional namespace of the cluster-owned cert-manager controller.
+    externalCertManagerNamespace: ""
     dbMetrics: false
     tracingSamplingProbability: ""
     testRunBaggage: false

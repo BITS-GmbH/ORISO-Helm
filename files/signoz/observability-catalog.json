@@ -217,6 +217,17 @@
       "op": "above",
       "target": 0,
       "severity": "warning"
+    },
+    {
+      "slug": "platform-certificate-expiring",
+      "title": "TLS certificate expires in less than 21 days",
+      "description": "cert-manager reports less than 21 days until expiry for an ORISO Dev Certificate. Check renewal and issuer status. See Operations monitoring, section 3.2.",
+      "metric": "certmanager_certificate_expiration_timestamp_seconds",
+      "timeAggregation": "latest",
+      "spaceAggregation": "min",
+      "op": "above",
+      "target": 0,
+      "severity": "warning"
     }
   ],
   "alerts": [

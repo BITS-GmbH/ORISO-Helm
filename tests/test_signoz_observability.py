@@ -111,6 +111,17 @@ class AssetContractTest(unittest.TestCase):
         self.assertIn("present_over_time", readiness)
         self.assertNotIn("sum_over_time", readiness)
 
+    def test_certificate_expiry_uses_the_certificate_namespace_and_clock(self) -> None:
+        slug = "platform-certificate-expiring"
+        _, alerts = MODULE.load_assets(ASSETS, platform_alerts=True)
+        rule = next(alert for alert in alerts if alert["_orisoSlug"] == slug)
+        self.assertEqual(rule["labels"]["severity"], "warning")
+        self.assertEqual(rule["notificationSettings"]["groupBy"], ["environment", "namespace", "name"])
+        query = MODULE._platform_query(slug, "dev", "oriso-dev", guarded=True)["query"]
+        for matcher in ('"service.name"="cert-manager"', '"namespace"="caritas"',
+                        "certmanager_certificate_expiration_timestamp_seconds", "time()", "1814400"):
+            self.assertIn(matcher, query)
+
     def test_assets_cover_diagnosis_and_platform_failure_modes(self) -> None:
         self.assertEqual(
             {item["name"] for item in self.dashboards},

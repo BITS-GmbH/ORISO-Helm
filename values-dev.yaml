@@ -22,6 +22,7 @@ global:
     # --enable-metrics=true (live change, verified 2026-11-06); on a cluster whose
     # controller has metrics off the target just stays down.
     externalIngressNginxNamespace: "ingress-nginx"
+    externalCertManagerNamespace: "cert-manager"
     dbMetrics: true
     webVitals:
       enabled: true
