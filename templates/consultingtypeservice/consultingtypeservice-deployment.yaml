@@ -248,6 +248,13 @@ spec:
                   name: consultingtypeservice-configmap-env
           ports:
             - containerPort: 8080
+          # Probe the Spring Boot port targeted by the Service.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8083
+            periodSeconds: 10
+            timeoutSeconds: 3
           securityContext:
             {{- include "oriso.containerSecurityContext" (dict) | nindent 12 }}
           volumeMounts:
