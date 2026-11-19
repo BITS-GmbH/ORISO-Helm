@@ -153,6 +153,7 @@ population with the cluster inventory during the installed acceptance check.
 | IP anonymizer unavailable | Fewer than one available replica in two populated 30-second intervals for `caritas/ip-anonymizer`. | Critical |
 | Ingress 5xx rate | Strictly more than 2% of observed requests over five minutes, grouped by ingress namespace and name. | Critical |
 | Data store reachability | No successful observation of MariaDB, MongoDB, RabbitMQ or Redis for five minutes, with continuous collector coverage. Each service has its own rule. | Critical |
+| Keycloak login failures | More than five times the usual failed-login count over ten minutes. The reference is the previous hour, excluding the evaluated ten minutes. | Warning |
 | PVC capacity | Strictly above 75%, 85%, or 95% on its fullest reporting mount. Only the highest applicable tier matches. | Info / Warning / Critical |
 | Node filesystem capacity | Strictly above 85% using the kubelet's node filesystem measurements. | Warning |
 
@@ -181,6 +182,17 @@ the collector-staleness rule covers the shared failure. To investigate a Redis
 alarm, compare Prometheus scrape `up` with `redis_up` to distinguish the exporter
 path from the backend. The other store alarms call for checking the service and
 its monitoring-user access.
+
+The Keycloak rule combines observed counter increases across the Dev instances
+and realms. It compares whole counts from successive one-minute samples.
+It uses the app scrape on
+`/auth/metrics` and the `keycloak_user_events_total` login series. Successful
+scrapes in both windows and a recent login event series establish coverage.
+Allow at least 70 minutes of scrape history before enabling the rule. The
+reference count per ten minutes has a floor of one, so with a quiet
+reference the alert starts at six observed failures. A newly observed error
+counter can contribute its initial value when its scrape target was already
+healthy before the window. The alert carries only the cluster and environment.
 
 Storage rules compute the share of capacity unavailable to workloads from
 the kubelet's available bytes and total capacity. The node filesystem figure

@@ -206,6 +206,17 @@
       "op": "above",
       "target": 0,
       "severity": "critical"
+    },
+    {
+      "slug": "platform-keycloak-login-failures",
+      "title": "Keycloak failed login count exceeds its baseline",
+      "description": "The Dev Keycloak login error count over ten minutes exceeded five times the preceding hour's average per ten minutes, with a minimum baseline of one. Check login errors and the affected realm in the protected Keycloak view. See Operations monitoring, section 3.5.",
+      "metric": "keycloak_user_events_total",
+      "timeAggregation": "rate",
+      "spaceAggregation": "sum",
+      "op": "above",
+      "target": 0,
+      "severity": "warning"
     }
   ],
   "alerts": [

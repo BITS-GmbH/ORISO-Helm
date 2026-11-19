@@ -96,6 +96,21 @@ class AssetContractTest(unittest.TestCase):
                 self.assertEqual(rule["labels"]["severity"], "critical")
                 self.assertEqual(rule["condition"]["thresholds"]["spec"][0]["target"], 0)
 
+    def test_keycloak_failure_spike_uses_scoped_scrapes_and_disjoint_baseline(self) -> None:
+        slug = "platform-keycloak-login-failures"
+        _, alerts = MODULE.load_assets(ASSETS, platform_alerts=True)
+        rule = next(alert for alert in alerts if alert["_orisoSlug"] == slug)
+        self.assertEqual(rule["labels"]["severity"], "warning")
+        self.assertEqual(rule["notificationSettings"]["groupBy"], ["environment"])
+        query = MODULE._platform_query(slug, "dev", "oriso-dev", guarded=True)["query"]
+        for matcher in ('"service.name"="keycloak"', '"k8s_namespace_name"="caritas"',
+                        '"event"="login"', '"error"!=""', '"error"!="none"', "[1h:1m] offset 10m"):
+            self.assertIn(matcher, query)
+        readiness = MODULE._platform_query(slug, "dev", "oriso-dev", guarded=False)["query"]
+        self.assertIn('"up"', readiness)
+        self.assertIn("present_over_time", readiness)
+        self.assertNotIn("sum_over_time", readiness)
+
     def test_assets_cover_diagnosis_and_platform_failure_modes(self) -> None:
         self.assertEqual(
             {item["name"] for item in self.dashboards},

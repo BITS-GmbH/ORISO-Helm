@@ -150,7 +150,7 @@ class Handler(BaseHTTPRequestHandler):
             query = entry["spec"]
             if entry["type"] == "promql":
                 expression = query["query"]
-                grouping = re.search(r'(?:max|sum) by \(([^)]+)\)', expression)[1]
+                grouping = re.search(r'(?:min|max|sum) by \(([^)]+)\)', expression)[1]
                 fields = json.loads(f"[{grouping}]")
                 raw = expression.split(") (", 1)[1].startswith("present_over_time(")
                 if "k8s.node.condition" in expression:

@@ -97,6 +97,11 @@ PLATFORM_SIGNALS = {
         "kind": "redis", "fields": (),
         "metrics": ("redis_up",), "match": ',"service.name"="redis","k8s_namespace_name"="caritas"',
     },
+    "platform-keycloak-login-failures": {
+        "kind": "keycloak-login", "fields": (),
+        "metrics": ("keycloak_user_events_total", "up"),
+        "match": ',"service.name"="keycloak","k8s_namespace_name"="caritas","service.instance.id"!=""',
+    },
 }
 OPTIONAL_ALERT_SLUGS = {DEPLOYMENT_IDENTITY_SLUG, *PLATFORM_SIGNALS}
 
@@ -478,6 +483,41 @@ def _datastore_reachability(
     return f"((0 * {collector_active}) and ({healthy})) or (({collector_active}) unless ({healthy}))"
 
 
+def _keycloak_login_spike(login: str, scrape: str, grouping: str, *, guarded: bool) -> str:
+    login = login.removesuffix("}") + ',"event"="login"}'
+    scrape_ok = f"min by ({grouping}) (last_over_time({scrape}[1m])) == 1"
+    opening = f"min by ({grouping}) (last_over_time({scrape}[1m] offset 70m)) == 1"
+    current = f"({scrape_ok})[10m:1m]"
+    reference = f"({scrape_ok})[1h:1m] offset 10m"
+    covered = (
+        f"({scrape_ok}) and ({opening}) and (count_over_time({current}) == 10)"
+        f" and (count_over_time({reference}) == 60)"
+        f" and (max by ({grouping}) (present_over_time({login}[150s])))"
+    )
+    if not guarded:
+        return covered
+
+    errors = login.removesuffix("}") + ',"error"!="","error"!="none"}'
+    targets = grouping + ', "service.instance.id"'
+    zero = f"0 * ({scrape_ok})"
+    latest = f"last_over_time({errors}[1m])"
+    prior = f"last_over_time({errors}[1m] offset 1m)"
+    increased = f"(({latest} - {prior}) >= 0)"
+    reset = f"({latest} and ({latest} < {prior}))"
+    # A lazy counter may first appear above zero. Count its initial value
+    # when the same scrape target was already healthy and that series absent.
+    prior_seen = f"present_over_time({errors}[150s] offset 1m)"
+    prior_scrape = f"max by ({targets}) (last_over_time({scrape}[1m] offset 1m) == 1)"
+    first_seen = f"(({latest} unless {prior_seen}) and on ({targets}) ({prior_scrape}))"
+    per_minute = f"sum by ({grouping}) ({increased} or {reset} or {first_seen})"
+    # Compare whole observed increases. Range extrapolation can push five
+    # observed failures past the five-failure threshold.
+    recent_failures = f"(sum_over_time(({per_minute})[10m:1m]) or ({zero}))"
+    historical_failures = f"(sum_over_time(({per_minute})[1h:1m] offset 10m) or ({zero}))"
+    baseline = f"clamp_min(({historical_failures}) / 6, 1)"
+    return f"((({recent_failures}) > bool (5 * {baseline}))) and ({covered})"
+
+
 def _platform_query(
     slug: str, environment: str, cluster_name: str, *, guarded: bool,
 ) -> dict[str, Any]:
@@ -499,6 +539,8 @@ def _platform_query(
         expression = _datastore_reachability(selectors[0], collector, grouping, guarded=guarded, redis=kind == "redis")
     elif kind == "restarts":
         expression = _restart_increase(selectors[0], grouping, guarded=guarded)
+    elif kind == "keycloak-login":
+        expression = _keycloak_login_spike(*selectors, grouping, guarded=guarded)
     elif not guarded:
         population = " or ".join(f"present_over_time({selector}[5m])" for selector in selectors)
         expression = f"max by ({grouping}) ({population})"
