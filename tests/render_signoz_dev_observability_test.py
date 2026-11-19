@@ -138,6 +138,16 @@ def assert_dev(docs: dict[tuple[str, str], dict[str, Any]]) -> None:
     agent = yaml.safe_load(next(iter(docs[("ConfigMap", "caritas-k8s-infra-otel-agent")]["data"].values())))
     statements = "\n".join(agent["processors"]["transform/oriso_log_privacy"]["log_statements"])
     assert 'resource.attributes["k8s.deployment.name"]' in statements
+    cluster = yaml.safe_load(next(iter(docs[("ConfigMap", "caritas-k8s-infra-otel-deployment")]["data"].values())))
+    pipelines = cluster["service"]["pipelines"]
+    marker = "resource/datastore-receiver"
+    assert [name for name, pipeline in pipelines.items() if marker in pipeline["processors"]] == ["metrics/dbs"]
+    assert cluster["processors"][marker]["attributes"] == [
+        {"action": "upsert", "key": "oriso.signal.source", "value": "datastore-receiver"},
+        {"action": "upsert", "key": "k8s.namespace.name", "value": "${env:K8S_NAMESPACE}"},
+    ]
+    for receiver, metric in (("mongodb", "mongodb.uptime"), ("rabbitmq", "rabbitmq.node.uptime")):
+        assert cluster["receivers"][receiver]["metrics"][metric]["enabled"] is True
 
     # Browser Web Vitals: same-origin ingest, bounded, wired into both SPAs.
     ingress = docs[("Ingress", "caritas-signoz-rum-ingress")]

@@ -47,6 +47,12 @@ processors:
     - action: insert
       key: deployment.environment
       value: ${env:DEPLOYMENT_ENVIRONMENT}
+{{- if eq (include "oriso.dbMetrics.enabled" .) "true" }}
+  resource/datastore-receiver:
+    attributes:
+    - {action: upsert, key: oriso.signal.source, value: datastore-receiver}
+    - {action: upsert, key: k8s.namespace.name, value: "${env:K8S_NAMESPACE}"}
+{{- end }}
   resourcedetection:
     detectors:
     - env
@@ -175,11 +181,17 @@ receivers:
       # receiver logs "could not find key" on every collection.
       mongodb.flushes.rate:
         enabled: false
+      mongodb.uptime:
+        enabled: true
   rabbitmq:
     endpoint: http://rabbitmq.{{ .Release.Namespace }}:15672
     username: oriso-monitor
     password: ${env:DBMON_RABBITMQ_PASSWORD}
     collection_interval: 60s
+    metrics:
+      # Node-wide and available even for a healthy broker without queues.
+      rabbitmq.node.uptime:
+        enabled: true
 {{- end }}
 service:
   extensions:
@@ -228,6 +240,7 @@ service:
       processors:
       - resource/deployenv
       - resourcedetection
+      - resource/datastore-receiver
       - batch
       receivers:
       - mysql

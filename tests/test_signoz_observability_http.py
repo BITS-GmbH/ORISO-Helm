@@ -46,6 +46,7 @@ class State:
         self.covered_platform_nodes: dict[str, int] = {"node-a": 0, "node-b": 1}
         self.stale_platform_samples = False
         self.missing_platform_companion = False
+        self.unreachable_datastore = False
         self.query_results: dict[str, list[dict[str, Any]]] = {}
         self.trace_responses: dict[str, dict[str, Any]] = {}
         self.browser_vitals_queries: list[dict[str, Any]] = []
@@ -156,6 +157,12 @@ class Handler(BaseHTTPRequestHandler):
                     nodes = self.state.platform_nodes if raw else self.state.covered_platform_nodes
                 elif "k8s.volume." in expression:
                     nodes = {} if self.state.missing_platform_companion and not raw else {"fixture": 1 if raw else 3}
+                elif "mysql.uptime" in expression:
+                    outage_query = " unless " in expression
+                    if outage_query:
+                        nodes = {"fixture": int(self.state.unreachable_datastore)}
+                    else:
+                        nodes = {} if self.state.unreachable_datastore else {"fixture": 1}
                 else:
                     nodes = {"fixture": 1 if raw else 0}
                 self._send(200, {
@@ -527,6 +534,13 @@ class HttpFlowTest(unittest.TestCase):
         self._main(*config, "--platform-alerts")
         self.assertFalse(self.state.rules[rule_id]["disabled"])
         self.assertEqual(self._counts(), (3, 6 + len(MODULE.PLATFORM_SIGNALS), 0, 0))
+
+    def test_platform_activation_rejects_datastore_outage_before_writes(self) -> None:
+        self.state.unreachable_datastore = True
+        args = ("--mode", "provision", "--environment", "dev", "--cluster-name", "oriso-dev")
+        with self.assertRaisesRegex(RuntimeError, "complete sampled data for platform-mariadb"):
+            self._main(*args, "--platform-alerts")
+        self.assertEqual(self._counts(), (0, 0, 0, 0))
 
     def test_platform_rule_rejects_ambiguous_ids(self) -> None:
         args = ("--mode", "provision", "--environment", "dev", "--cluster-name", "oriso-dev")

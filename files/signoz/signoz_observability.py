@@ -32,6 +32,7 @@ DEPLOYMENT_IDENTITY_SLUG = "deployment-identity-mismatch"
 NODE_NOT_READY_SLUG = "platform-node-not-ready"
 PLATFORM_SCOPE = ("deployment.environment", "k8s.cluster.name")
 CRITICAL_DEPLOYMENTS = "ingress-nginx-controller|ip-anonymizer|keycloak|userservice|matrix-synapse|frontend"
+DATASTORE_RECEIVER_SCOPE = ',"oriso.signal.source"="datastore-receiver","k8s.namespace.name"="caritas"'
 # Rules declare the exported signals and the only labels carried to Slack.
 PLATFORM_SIGNALS = {
     NODE_NOT_READY_SLUG: {
@@ -79,6 +80,22 @@ PLATFORM_SIGNALS = {
     "platform-container-restarts": {
         "kind": "restarts", "fields": ("k8s.namespace.name", "k8s.pod.name", "k8s.container.name"),
         "metrics": ("k8s.container.restarts",), "match": ',"k8s.pod.uid"!=""',
+    },
+    "platform-mariadb-unreachable": {
+        "kind": "datastore", "fields": (),
+        "metrics": ("mysql.uptime",), "match": DATASTORE_RECEIVER_SCOPE,
+    },
+    "platform-mongodb-unreachable": {
+        "kind": "datastore", "fields": (),
+        "metrics": ("mongodb.uptime",), "match": DATASTORE_RECEIVER_SCOPE,
+    },
+    "platform-rabbitmq-unreachable": {
+        "kind": "datastore", "fields": (),
+        "metrics": ("rabbitmq.node.uptime",), "match": DATASTORE_RECEIVER_SCOPE,
+    },
+    "platform-redis-unreachable": {
+        "kind": "redis", "fields": (),
+        "metrics": ("redis_up",), "match": ',"service.name"="redis","k8s_namespace_name"="caritas"',
     },
 }
 OPTIONAL_ALERT_SLUGS = {DEPLOYMENT_IDENTITY_SLUG, *PLATFORM_SIGNALS}
@@ -441,19 +458,46 @@ def _restart_increase(selector: str, grouping: str, *, guarded: bool) -> str:
     return f"max by ({grouping}) ({increase} and {complete} and ({current})) and ({live_identities} == 1)"
 
 
+def _datastore_reachability(
+    selector: str, collector: str, grouping: str, *, guarded: bool, redis: bool,
+) -> str:
+    # Keep the original self-telemetry identity through the coverage check so a
+    # new collector process cannot inherit the previous instance's history.
+    checks = " and ".join(
+        f"present_over_time({collector}[60s]{f' offset {offset}s' if offset else ''})"
+        for offset in range(0, 301, 60)
+    )
+    collector_active = f"max by ({grouping}) ({checks})"
+    window = "5m" if guarded else "150s"
+    observations = f"present_over_time({selector}[{window}])"
+    if redis:
+        observations = f"max_over_time({selector}[{window}]) == 1"
+    healthy = f"max by ({grouping}) ({observations})"
+    if not guarded:
+        return f"({collector_active}) and ({healthy})"
+    return f"((0 * {collector_active}) and ({healthy})) or (({collector_active}) unless ({healthy}))"
+
+
 def _platform_query(
     slug: str, environment: str, cluster_name: str, *, guarded: bool,
 ) -> dict[str, Any]:
     signal = PLATFORM_SIGNALS[slug]
     scope = (
         '"deployment.environment"=' + json.dumps(environment)
-        + ',"k8s.cluster.name"=' + json.dumps(cluster_name) + signal.get("match", "")
+        + ',"k8s.cluster.name"=' + json.dumps(cluster_name)
     )
-    selectors = tuple("{" + json.dumps(metric) + "," + scope + "}" for metric in signal["metrics"])
+    matchers = scope + signal.get("match", "")
+    selectors = tuple("{" + json.dumps(metric) + "," + matchers + "}" for metric in signal["metrics"])
     grouping = ", ".join(json.dumps(dimension) for dimension in (*PLATFORM_SCOPE, *signal["fields"]))
     kind = signal["kind"]
 
-    if kind == "restarts":
+    if kind in {"datastore", "redis"}:
+        collector = (
+            '{"otelcol_receiver_accepted_metric_points",' + scope
+            + ',"service.name"="oriso-k8s-infra-cluster","k8s.namespace.name"="caritas","service.instance.id"!=""}'
+        )
+        expression = _datastore_reachability(selectors[0], collector, grouping, guarded=guarded, redis=kind == "redis")
+    elif kind == "restarts":
         expression = _restart_increase(selectors[0], grouping, guarded=guarded)
     elif not guarded:
         population = " or ".join(f"present_over_time({selector}[5m])" for selector in selectors)

@@ -134,8 +134,10 @@ contents after a known test run as part of ORISO-E2E#97.
 ## Dev platform alerts
 
 `signoz.orisoObservability.platformAlerts.enabled` defaults to `false`. Enable it
-on Dev after the Kubernetes collector and the ingress-nginx app scrape are
-reporting. Each rule must return a current result, including a valid zero, for
+on Dev after the Kubernetes collector, ingress-nginx app scrape, and data store
+metrics are reporting. The chart requires both `global.observability.appMetrics`
+and `global.observability.dbMetrics` to enable these rules.
+Each rule must return a current result, including a valid zero, for
 every eligible object observed by its metrics. The provisioner compares both
 queries at the same completed minute before any writes. Compare the reporting
 population with the cluster inventory during the installed acceptance check.
@@ -150,6 +152,7 @@ population with the cluster inventory during the installed acceptance check.
 | Container restart count increase | The observed restart count rises by more than three in 15 minutes for the same Pod UID and container. | Critical |
 | IP anonymizer unavailable | Fewer than one available replica in two populated 30-second intervals for `caritas/ip-anonymizer`. | Critical |
 | Ingress 5xx rate | Strictly more than 2% of observed requests over five minutes, grouped by ingress namespace and name. | Critical |
+| Data store reachability | No successful observation of MariaDB, MongoDB, RabbitMQ or Redis for five minutes, with continuous collector coverage. Each service has its own rule. | Critical |
 | PVC capacity | Strictly above 75%, 85%, or 95% on its fullest reporting mount. Only the highest applicable tier matches. | Info / Warning / Critical |
 | Node filesystem capacity | Strictly above 85% using the kubelet's node filesystem measurements. | Warning |
 
@@ -167,6 +170,17 @@ combining statuses and controller replicas. A sampled route with no 5xx
 series has zero observed errors. A route with unchanged, covered counters
 has zero observed requests. Missing or incomplete counter samples leave the
 result unknown.
+
+The authenticated data store receivers add a source marker and emit instance
+uptime metrics, including RabbitMQ nodes with no queues. Redis uses a successful
+`redis_up=1` observation from its annotated exporter. During provisioning, each
+store needs a successful sample within 150 seconds. At runtime, the same
+collector process must report in six consecutive one-minute intervals before
+the rules can infer a five-minute absence. During a collector gap or restart,
+the collector-staleness rule covers the shared failure. To investigate a Redis
+alarm, compare Prometheus scrape `up` with `redis_up` to distinguish the exporter
+path from the backend. The other store alarms call for checking the service and
+its monitoring-user access.
 
 Storage rules compute the share of capacity unavailable to workloads from
 the kubelet's available bytes and total capacity. The node filesystem figure

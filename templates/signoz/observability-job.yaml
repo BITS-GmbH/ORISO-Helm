@@ -17,6 +17,9 @@
   {{- if not (and (get $signoz "enabled") (get $managed "enabled") (get $collector "enabled") (get $collector "clusterName")) -}}
     {{- fail "platform alerts require SigNoz, managed observability and a named Kubernetes collector" -}}
   {{- end -}}
+  {{- if not (and (eq (include "oriso.appMetrics.enabled" .) "true") (eq (include "oriso.dbMetrics.enabled" .) "true")) -}}
+    {{- fail "platform alerts require appMetrics and dbMetrics" -}}
+  {{- end -}}
 {{- end -}}
 {{- if and (get $signoz "enabled" | default false) (get $managed "enabled" | default false) }}
 {{- $name := printf "%s-signoz-observability" .Release.Name -}}

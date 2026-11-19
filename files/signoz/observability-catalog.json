@@ -162,6 +162,50 @@
       "op": "above",
       "target": 0,
       "severity": "critical"
+    },
+    {
+      "slug": "platform-mariadb-unreachable",
+      "title": "Dev MariaDB is not reporting reachability",
+      "description": "MariaDB uptime was absent for five minutes while the Dev cluster collector kept reporting. Check the service and the monitoring user's scrape access.",
+      "metric": "mysql.uptime",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "critical"
+    },
+    {
+      "slug": "platform-mongodb-unreachable",
+      "title": "Dev MongoDB is not reporting reachability",
+      "description": "MongoDB uptime was absent for five minutes while the Dev cluster collector kept reporting. Check the service and the monitoring user's serverStatus access.",
+      "metric": "mongodb.uptime",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "critical"
+    },
+    {
+      "slug": "platform-rabbitmq-unreachable",
+      "title": "Dev RabbitMQ is not reporting reachability",
+      "description": "RabbitMQ node uptime was absent for five minutes while the Dev cluster collector kept reporting. Check the broker and the monitoring user's management API access.",
+      "metric": "rabbitmq.node.uptime",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "critical"
+    },
+    {
+      "slug": "platform-redis-unreachable",
+      "title": "Dev Redis has no successful exporter probe",
+      "description": "No successful Redis probe was observed for five minutes while the Dev cluster collector kept reporting. Check the Redis service and the exporter scrape independently.",
+      "metric": "redis_up",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "critical"
     }
   ],
   "alerts": [
