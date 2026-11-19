@@ -308,6 +308,70 @@ data from the last 5 minutes must appear. If it does not, check the controller
 args (`kubectl -n ingress-nginx get deploy ingress-nginx-controller -o yaml | grep enable-metrics`)
 and the collector log for `ingress-nginx` scrape errors.
 
+## Forward Dev alerts to Buzz and OpenClaw
+
+Keep `oriso-alerts-slack` as the Slack channel. Confirm the first delivered
+Slack alert and the approved private route from Dev to the Dreambau forwarder
+before activating the second channel. Verify the forwarder's dedicated Buzz
+and OpenClaw identities. [Slack delivery #468](https://github.com/OpenResilienceInitiative/ORISO-Helm/issues/468) · [Dreambau forwarder](https://github.com/Storypapst/dreambau/pull/223)
+
+With forwarding off, append a read-only Secret mount to the existing SigNoz
+application container volumes. Mount the approved webhook credential as
+`/var/run/oriso-signoz-agent/token` and verify it is readable in the
+container. Use `signoz.signoz.additionalVolumes` and
+`signoz.signoz.additionalVolumeMounts` in the reviewed Dev override.
+Create the existing-channel dependency `oriso-alerts-agents` in SigNoz
+with the approved private route and file-backed credential:
+
+```json
+{
+  "name": "oriso-alerts-agents",
+  "webhook_configs": [{
+    "url": "https://<approved-private-host>/signoz/alerts",
+    "send_resolved": false,
+    "http_config": {
+      "follow_redirects": false,
+      "authorization": {
+        "type": "Bearer",
+        "credentials_file": "/var/run/oriso-signoz-agent/token"
+      }
+    }
+  }]
+}
+```
+
+Allow the Alertmanager configuration sync after changing the channel.
+SigNoz v0.135.1 uses a one-minute polling interval. [Pinned sync configuration](https://github.com/SigNoz/signoz/blob/v0.135.1/pkg/alertmanager/config.go#L38-L44)
+
+Set `signoz.orisoObservability.agentForwarding=true` in the approved Dev
+override and run the managed provisioning Job. The provisioner verifies the
+Slack and webhook channel types before writing rules. The six core catalog
+rules use both channels and include the fixed rule slug and unitless value.
+The forwarder configuration maps the slugs to these services.
+
+| Rule | Service |
+| --- | --- |
+| `provisioning-compensation-failure` | `userservice` |
+| `availability-store-failure` | `userservice` |
+| `notification-failure` | `userservice` |
+| `unencrypted-room` | `userservice` |
+| `clickhouse-capacity` | `clickhouse` |
+| `collector-staleness` | `collector` |
+
+Read back the rules with the existing Dev key and
+`--mode check --skip-telemetry --agent-forwarding`. For the approved live
+test, select a rule with a real numeric sample and use
+`--mode test-rule --rule <slug> --agent-forwarding`. The evaluation count
+confirms the query produced an alert. Verify the Slack, Buzz and OpenClaw
+receipts and check that the latter two contain the fixed rule, service and
+value. The forwarder handles measured firing values. It leaves No Data and
+resolved delivery to the configured SigNoz channels.
+
+To restore Slack-only routing, set `agentForwarding=false` and run the
+managed Job again. Read back the same six rule IDs with Slack routes and
+the forwarding fields removed before retiring the private webhook and
+credential mount.
+
 ## ClickHouse memory and old system tables
 
 ClickHouse ran without a memory limit and the kernel killed it on 2026-11-03 when

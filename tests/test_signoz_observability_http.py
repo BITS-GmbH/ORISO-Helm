@@ -211,7 +211,7 @@ class HttpFlowTest(unittest.TestCase):
         }
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, env, clear=False):
-            for name in ("SIGNOZ_API_URL", "ORISO_ASSETS_DIR"):
+            for name in ("SIGNOZ_API_URL", "ORISO_ASSETS_DIR", "ORISO_AGENT_FORWARDING"):
                 os.environ.pop(name, None)
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = MODULE.main(
@@ -234,6 +234,70 @@ class HttpFlowTest(unittest.TestCase):
             self.state.channel_writes,
             len(self.state.test_rules),
         )
+
+    def test_agent_forwarding_preserves_slack_and_reconciles_existing_rule_ids(self) -> None:
+        self.state.channels["agent"] = {"id": "agent", "name": "oriso-alerts-agents", "type": "webhook"}
+        dev = ("--environment", "dev", "--cluster-name", "oriso-dev", "--deployment-identity")
+        self.assertEqual(self._main(*dev, "--mode", "provision", "--agent-forwarding")[0], 0)
+        original_ids = set(self.state.rules)
+        forwarded = set()
+        for alert in self.state.rules.values():
+            rule = alert["labels"].get("oriso_forward_rule")
+            routes = alert["condition"]["thresholds"]["spec"][0]["channels"]
+            self.assertEqual(routes[0], "oriso-alerts-slack")
+            if rule:
+                forwarded.add(rule)
+                self.assertEqual(routes, ["oriso-alerts-slack", "oriso-alerts-agents"])
+                self.assertEqual(alert["annotations"]["oriso_forward_value"], "{{$value}}")
+                self.assertEqual(alert["condition"]["compositeQuery"].get("unit"), "")
+            else:
+                self.assertEqual(routes, ["oriso-alerts-slack"])
+        self.assertEqual(forwarded, MODULE.REQUIRED_ALERT_SLUGS)
+        self.assertEqual(self._counts(), (3, 7, 0, 0))
+
+        first = next(alert for alert in self.state.rules.values() if alert["labels"].get("oriso_forward_rule"))
+        first["condition"]["thresholds"]["spec"][0]["channels"].append("unexpected-channel")
+        with self.assertRaisesRegex(RuntimeError, "stored alert route drift"):
+            self._main(*dev, "--mode", "check", "--skip-telemetry", "--agent-forwarding")
+
+        del self.state.channels["agent"]
+        self.assertEqual(self._main(*dev, "--mode", "provision")[0], 0)
+        self.assertEqual(set(self.state.rules), original_ids)
+        for alert in self.state.rules.values():
+            self.assertNotIn("oriso_forward_rule", alert["labels"])
+            self.assertNotIn("oriso_forward_value", alert["annotations"])
+            self.assertEqual(alert["condition"]["thresholds"]["spec"][0]["channels"], ["oriso-alerts-slack"])
+
+    def test_agent_forwarding_requires_the_webhook_before_writes(self) -> None:
+        dev = ("--environment", "dev", "--cluster-name", "oriso-dev")
+        for type_name in (None, "slack"):
+            with self.subTest(type_name=type_name):
+                if type_name:
+                    self.state.channels["agent"] = {"name": "oriso-alerts-agents", "type": type_name}
+                with self.assertRaisesRegex(RuntimeError, "oriso-alerts-agents.*webhook"):
+                    self._main(*dev, "--mode", "provision", "--agent-forwarding")
+                self.assertEqual(self._counts(), (0, 0, 0, 0))
+
+    def test_agent_forwarding_rejects_non_dev_before_writes(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "agent forwarding.*Dev"):
+            self._main("--mode", "provision", "--agent-forwarding")
+        self.assertEqual(self._counts(), (0, 0, 0, 0))
+
+    def test_agent_forwarding_rule_test_reports_evaluation_and_preserves_both_routes(self) -> None:
+        self.state.channels["agent"] = {"name": "oriso-alerts-agents", "type": "webhook"}
+        code, printed = self._main(
+            "--environment", "dev", "--cluster-name", "oriso-dev",
+            "--mode", "test-rule", "--rule", "unencrypted-room", "--agent-forwarding",
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("Verify both receiver receipts", printed)
+        self.assertEqual(self._counts(), (0, 0, 0, 1))
+        payload = self.state.test_rules[0]
+        self.assertEqual(
+            payload["condition"]["thresholds"]["spec"][0]["channels"],
+            ["oriso-alerts-slack", "oriso-alerts-agents"],
+        )
+        self.assertEqual(payload["labels"]["oriso_forward_rule"], "unencrypted-room")
 
     def test_fake_backend_normalizes_legacy_tag_group_by_to_attribute(self) -> None:
         # Guards the fake against drifting from SigNoz v0.135.1, which stores a

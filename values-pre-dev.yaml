@@ -53,6 +53,7 @@ signoz:
   # Dev enables managed provisioning; Pre-Dev has no provisioning key configured.
   orisoObservability:
     enabled: false
+    agentForwarding: false
   signoz:
     ingress:
       enabled: false

@@ -722,6 +722,8 @@ signoz:
   orisoObservability:
     enabled: false
     conformanceCheck: false
+    # Opt in on Dev after the private agent receiver and Slack route have been verified.
+    agentForwarding: false
     deploymentIdentity:
       enabled: false
       # Approved deployment pin and runtime digest set for each Java workload.
