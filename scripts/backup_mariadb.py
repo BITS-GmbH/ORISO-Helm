@@ -15,6 +15,7 @@ from tempfile import TemporaryDirectory
 
 SYSTEM_SCHEMAS = {"information_schema", "mysql", "performance_schema", "sys"}
 POD = "pod/mariadb-0"
+POD_READINESS = 'jsonpath={.metadata.uid} {.status.conditions[?(@.type=="Ready")].status}'
 AUTH = (
     ': "${MYSQL_ROOT_PASSWORD:?MariaDB credential is unavailable}"; '
     'export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; '
@@ -40,11 +41,26 @@ def save_dump(command, path):
             raise RuntimeError(f"MariaDB dump for {path.name} was empty")
 
 
-def backup(kubernetes, output_root):
+def wait_for_target(kubernetes):
     subprocess.run(
         kubernetes + ["wait", "--for=condition=Ready", POD, "--timeout=30s"],
         check=True,
     )
+
+
+def check_target(kubernetes):
+    wait_for_target(kubernetes)
+    fields = subprocess.check_output(
+        kubernetes + ["get", POD, "-o", POD_READINESS],
+        text=True,
+    ).split()
+    if len(fields) != 2 or fields[1] != "True":
+        raise RuntimeError("Could not confirm the identity of the ready MariaDB pod")
+    return fields[0]
+
+
+def backup(kubernetes, output_root):
+    wait_for_target(kubernetes)
     remote = kubernetes + ["exec", POD, "--container", "mariadb", "--", "sh", "-ec"]
     listed_schemas = subprocess.check_output(remote + [DISCOVER], text=True)
     schemas = [
@@ -76,22 +92,34 @@ def main():
     parser.add_argument("kubeconfig", type=Path)
     parser.add_argument("context")
     parser.add_argument("namespace")
-    parser.add_argument("output_root", type=Path, help="private local directory")
+    parser.add_argument("output_root", type=Path, nargs="?", help="private local directory for backups")
+    parser.add_argument(
+        "--check-target", action="store_true", help="report the ready pod without accessing MariaDB",
+    )
     args = parser.parse_args()
     if not args.kubeconfig.is_file():
         parser.error("kubeconfig must be an existing file")
+    if not args.check_target and args.output_root is None:
+        parser.error("output_root is required for a backup")
     kubernetes = [
         "kubectl", "--kubeconfig", str(args.kubeconfig), "--context", args.context,
         "--namespace", args.namespace,
     ]
     os.umask(0o077)
+    operation = "Target check" if args.check_target else "Backup"
     try:
+        if args.check_target:
+            uid = check_target(kubernetes)
+            checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            print(f"{checked_at} MariaDB target ready context={args.context} "
+                  f"namespace={args.namespace} {POD} uid={uid}")
+            return 0
         destination = backup(kubernetes, args.output_root)
     except subprocess.CalledProcessError as error:
-        print(f"Backup stopped after kubectl exited with status {error.returncode}", file=sys.stderr)
+        print(f"{operation} stopped after kubectl exited with status {error.returncode}", file=sys.stderr)
         return 1
     except (OSError, RuntimeError) as error:
-        print(f"Backup stopped: {error}", file=sys.stderr)
+        print(f"{operation} stopped: {error}", file=sys.stderr)
         return 1
     print(f"Completed local MariaDB backup: {destination}")
     return 0

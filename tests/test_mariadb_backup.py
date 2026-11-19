@@ -25,6 +25,10 @@ action = args[6]
 scenario = os.environ["BACKUP_TEST_SCENARIO"]
 if action == "wait":
     sys.exit(1 if scenario == "missing-pod" else 0)
+if action == "get":
+    if scenario != "missing-uid":
+        print("synthetic-pod-uid", "False" if scenario == "replaced-pod" else "True")
+    sys.exit(0)
 if any("SHOW DATABASES" in arg for arg in args):
     if scenario == "discovery-failure":
         print("userservice")
@@ -43,18 +47,17 @@ sys.exit(1 if scenario == "partial-dump" and schema == "userservice" else 0)
 
 
 class MariaDbBackupTest(unittest.TestCase):
-    def run_backup(self, scenario):
+    def run_backup(self, scenario, *options, with_output=True):
         env = {
             **os.environ,
             "PATH": f"{self.bin_dir}{os.pathsep}{os.environ['PATH']}",
             "BACKUP_TEST_CALLS": str(self.calls),
             "BACKUP_TEST_SCENARIO": scenario,
         }
-        return subprocess.run(
-            [sys.executable, str(SCRIPT), str(self.kubeconfig), "audit-dev",
-             "caritas", str(self.output)],
-            env=env, text=True, capture_output=True, timeout=15,
-        )
+        command = [sys.executable, str(SCRIPT), str(self.kubeconfig), "audit-dev", "caritas"]
+        if with_output:
+            command.append(str(self.output))
+        return subprocess.run(command + list(options), env=env, text=True, capture_output=True, timeout=15)
 
     def setUp(self):
         scratch = self.enterContext(tempfile.TemporaryDirectory())
@@ -71,6 +74,29 @@ class MariaDbBackupTest(unittest.TestCase):
 
     def calls_recorded(self):
         return [json.loads(row) for row in self.calls.read_text().splitlines()]
+
+    def test_target_check_only_reads_pod_metadata_and_reports_context(self):
+        result = self.run_backup("success", "--check-target", with_output=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00")
+        self.assertIn("context=audit-dev namespace=caritas pod/mariadb-0 uid=synthetic-pod-uid", result.stdout)
+        self.assertFalse(self.output.exists())
+        calls = self.calls_recorded()
+        self.assertEqual([call[6] for call in calls], ["wait", "get"])
+        for call in calls:
+            self.assertEqual(call[:6], ["--kubeconfig", str(self.kubeconfig), "--context", "audit-dev", "--namespace", "caritas"])
+            self.assertIn("pod/mariadb-0", call)
+        self.assertIn('jsonpath={.metadata.uid} {.status.conditions[?(@.type=="Ready")].status}', calls[-1])
+
+    def test_target_check_requires_readiness_and_pod_identity(self):
+        for scenario in ("missing-pod", "missing-uid", "replaced-pod"):
+            with self.subTest(scenario=scenario):
+                self.calls.unlink(missing_ok=True)
+                result = self.run_backup(scenario, "--check-target")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertNotIn("uid=", result.stdout)
+                self.assertFalse(self.output.exists())
+                self.assertNotIn("exec", [call[6] for call in self.calls_recorded()])
 
     def test_lookup_failure_never_creates_an_output_directory(self):
         result = self.run_backup("missing-pod")
