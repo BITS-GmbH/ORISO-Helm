@@ -81,6 +81,21 @@ class AssetContractTest(unittest.TestCase):
                 current, expected, environment=scope["environment"], channel_name=scope["channel_name"],
             )
 
+    def test_platform_ingress_and_restart_rules_keep_only_operator_grouping(self) -> None:
+        _, alerts = MODULE.load_assets(ASSETS, platform_alerts=True)
+        rules = {item["_orisoSlug"]: item for item in alerts}
+        expected_groups = {
+            "platform-ingress-5xx": ["environment", "namespace", "ingress"],
+            "platform-anonymizer-unavailable": ["environment", "k8s.namespace.name", "k8s.deployment.name"],
+            "platform-container-restarts": ["environment", "k8s.namespace.name", "k8s.pod.name", "k8s.container.name"],
+        }
+        for slug, groups in expected_groups.items():
+            with self.subTest(slug=slug):
+                rule = rules[slug]
+                self.assertEqual(rule["notificationSettings"]["groupBy"], groups)
+                self.assertEqual(rule["labels"]["severity"], "critical")
+                self.assertEqual(rule["condition"]["thresholds"]["spec"][0]["target"], 0)
+
     def test_assets_cover_diagnosis_and_platform_failure_modes(self) -> None:
         self.assertEqual(
             {item["name"] for item in self.dashboards},

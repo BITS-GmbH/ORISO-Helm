@@ -129,6 +129,39 @@
       "op": "above",
       "target": 0,
       "severity": "warning"
+    },
+    {
+      "slug": "platform-anonymizer-unavailable",
+      "title": "Kubernetes IP anonymizer has no available replica",
+      "description": "The Dev IP anonymizer had no available replica in two successive 30-second intervals. Check deployment readiness and ingress authentication. See Operations monitoring, section 3.2.",
+      "metric": "k8s.deployment.available",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "critical"
+    },
+    {
+      "slug": "platform-ingress-5xx",
+      "title": "Kubernetes ingress 5xx request rate exceeds two percent",
+      "description": "More than 2 percent of observed ingress requests returned HTTP 5xx over five minutes. Check the IP anonymizer and the affected ingress backend. See Operations monitoring, section 3.2.",
+      "metric": "nginx_ingress_controller_requests",
+      "timeAggregation": "rate",
+      "spaceAggregation": "sum",
+      "op": "above",
+      "target": 0,
+      "severity": "critical"
+    },
+    {
+      "slug": "platform-container-restarts",
+      "title": "Kubernetes container restart count increased by more than three",
+      "description": "The Kubernetes restart count increased by more than three within 15 minutes of complete observations for the same pod and container. Check the most recent container exit and workload configuration. See Operations monitoring, section 3.3.",
+      "metric": "k8s.container.restarts",
+      "timeAggregation": "latest",
+      "spaceAggregation": "max",
+      "op": "above",
+      "target": 0,
+      "severity": "critical"
     }
   ],
   "alerts": [

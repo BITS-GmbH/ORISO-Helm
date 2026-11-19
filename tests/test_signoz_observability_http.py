@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import threading
 import time
 import unittest
@@ -147,9 +148,10 @@ class Handler(BaseHTTPRequestHandler):
             entry = body["compositeQuery"]["queries"][0]
             query = entry["spec"]
             if entry["type"] == "promql":
-                grouping, expression = query["query"].removeprefix("max by (").split(") (", 1)
+                expression = query["query"]
+                grouping = re.search(r'(?:max|sum) by \(([^)]+)\)', expression)[1]
                 fields = json.loads(f"[{grouping}]")
-                raw = expression.startswith("present_over_time(")
+                raw = expression.split(") (", 1)[1].startswith("present_over_time(")
                 if "k8s.node.condition" in expression:
                     nodes = self.state.platform_nodes if raw else self.state.covered_platform_nodes
                 elif "k8s.volume." in expression:

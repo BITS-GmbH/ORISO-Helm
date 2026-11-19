@@ -66,6 +66,20 @@ PLATFORM_SIGNALS = {
         "kind": "disk", "fields": ("k8s.node.name",),
         "metrics": ("k8s.node.filesystem.available", "k8s.node.filesystem.capacity"),
     },
+    "platform-anonymizer-unavailable": {
+        "kind": "anonymizer", "fields": ("k8s.namespace.name", "k8s.deployment.name"),
+        "metrics": ("k8s.deployment.available",),
+        "match": ',"k8s.namespace.name"="caritas","k8s.deployment.name"="ip-anonymizer"',
+    },
+    "platform-ingress-5xx": {
+        "kind": "ingress", "fields": ("namespace", "ingress"),
+        "metrics": ("nginx_ingress_controller_requests",),
+        "match": ',"service.name"="ingress-nginx","namespace"!="","ingress"!="","status"=~"[1-5][0-9]{2}"',
+    },
+    "platform-container-restarts": {
+        "kind": "restarts", "fields": ("k8s.namespace.name", "k8s.pod.name", "k8s.container.name"),
+        "metrics": ("k8s.container.restarts",), "match": ',"k8s.pod.uid"!=""',
+    },
 }
 OPTIONAL_ALERT_SLUGS = {DEPLOYMENT_IDENTITY_SLUG, *PLATFORM_SIGNALS}
 
@@ -390,6 +404,43 @@ def _storage_pressure(selectors: tuple[str, ...], grouping: str, limits: tuple[i
     return f"max by ({grouping}) (({severity}) and ({valid})) and ({covered} == {reported})"
 
 
+def _ingress_error_rate(selector: str, grouping: str) -> str:
+    error_selector = selector.replace('"status"=~"[1-5][0-9]{2}"', '"status"=~"5[0-9]{2}"')
+    total = f"sum by ({grouping}) (increase({selector}[5m]))"
+    errors = f"sum by ({grouping}) (increase({error_selector}[5m]))"
+    recent = f"present_over_time({selector}[90s])"
+    covered = f"count by ({grouping}) ((count_over_time({selector}[5m]) >= 2) and {recent})"
+    active = f"count by ({grouping}) ({recent})"
+    # An ingress with observed traffic can have no 5xx counter yet.
+    return f"((({errors} or (0 * {total})) * 100) > bool ({total} * 2)) and ({covered} == {active})"
+
+
+def _restart_increase(selector: str, grouping: str, *, guarded: bool) -> str:
+    identity = grouping + ', "k8s.pod.uid"'
+    recent = f"present_over_time({selector}[30s])"
+    if not guarded:
+        baseline = f"present_over_time({selector}[30s] offset 15m)"
+        return (
+            f"max by ({grouping}) ((max by ({identity}) ({recent})) "
+            f"and (max by ({identity}) ({baseline})))"
+        )
+
+    def sampled(offset: int = 0) -> str:
+        values = _last_in_slot(selector, offset)
+        return f"max by ({identity}) ({values} >= 0) and (count by ({identity}) ({values}) == 1)"
+
+    # The runtime container ID can change on each restart. The pod UID stays
+    # stable for the lifetime of the Kubernetes restart count.
+    current = sampled()
+    # A PromQL range excludes its left endpoint. Include 31 steps spanning
+    # 15 minutes, ending at the most recent aligned 30-second step.
+    history = f"({current})[930s:30s]"
+    increase = f"((max_over_time({history}) - min_over_time({history})) > bool 3)"
+    complete = f"(count_over_time({history}) == 31) and (resets({history}) == 0)"
+    live_identities = f"count by ({grouping}) (count by ({identity}) ({recent}))"
+    return f"max by ({grouping}) ({increase} and {complete} and ({current})) and ({live_identities} == 1)"
+
+
 def _platform_query(
     slug: str, environment: str, cluster_name: str, *, guarded: bool,
 ) -> dict[str, Any]:
@@ -402,12 +453,16 @@ def _platform_query(
     grouping = ", ".join(json.dumps(dimension) for dimension in (*PLATFORM_SCOPE, *signal["fields"]))
     kind = signal["kind"]
 
-    if not guarded:
+    if kind == "restarts":
+        expression = _restart_increase(selectors[0], grouping, guarded=guarded)
+    elif not guarded:
         population = " or ".join(f"present_over_time({selector}[5m])" for selector in selectors)
         expression = f"max by ({grouping}) ({population})"
     elif kind in {"pvc", "disk"}:
         limits = (75, 85, 95) if kind == "pvc" else (85,)
         expression = _storage_pressure(selectors, grouping, limits)
+    elif kind == "ingress":
+        expression = _ingress_error_rate(selectors[0], grouping)
     else:
         selector = selectors[0]
         if kind == "not-ready":
@@ -418,6 +473,11 @@ def _platform_query(
             violation = " and ".join(clauses)
         elif kind == "crashloop":
             violation = f"({_last_in_slot(selector)} > bool 0)"
+        elif kind == "anonymizer":
+            violation = (
+                f"(max_over_time({selector}[1m]) < bool 1) and (min_over_time({selector}[1m]) >= 0)"
+                f" and present_over_time({selector}[30s]) and present_over_time({selector}[30s] offset 30s)"
+            )
         else:
             violation = _paired_replicas(selectors)
 

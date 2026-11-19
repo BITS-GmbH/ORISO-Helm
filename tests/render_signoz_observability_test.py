@@ -284,7 +284,7 @@ def main() -> None:
     catalog = yaml.safe_load(config["data"]["observability-catalog.json"])
     assert len(catalog["dashboards"]) == 3
     assert len(catalog["alerts"]) == 6
-    assert len(catalog["platformAlerts"]) == 7
+    assert len(catalog["platformAlerts"]) == 10
 
     annotations = job["metadata"]["annotations"]
     assert "post-install" in annotations["helm.sh/hook"]

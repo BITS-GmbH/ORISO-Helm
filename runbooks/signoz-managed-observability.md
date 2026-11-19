@@ -134,11 +134,11 @@ contents after a known test run as part of ORISO-E2E#97.
 ## Dev platform alerts
 
 `signoz.orisoObservability.platformAlerts.enabled` defaults to `false`. Enable it
-on Dev after the named Kubernetes collector is reporting. Each rule must return
-a current result, including a valid zero, for every object recently observed by
-its metrics. The provisioner compares both queries at the same completed
-minute before any writes. Compare the reporting population with the cluster
-inventory during the installed acceptance check.
+on Dev after the Kubernetes collector and the ingress-nginx app scrape are
+reporting. Each rule must return a current result, including a valid zero, for
+every eligible object observed by its metrics. The provisioner compares both
+queries at the same completed minute before any writes. Compare the reporting
+population with the cluster inventory during the installed acceptance check.
 
 | Rule | Trigger | Severity |
 | --- | --- | --- |
@@ -147,14 +147,26 @@ inventory during the installed acceptance check.
 | Deployment unavailable | Same replica check for other Deployments. | Warning |
 | StatefulSet unready | Ready replicas below desired in ten consecutive 30-second intervals. | Warning |
 | Container CrashLoopBackOff | A current `CrashLoopBackOff` condition in the last 30 seconds. | Critical |
+| Container restart count increase | The observed restart count rises by more than three in 15 minutes for the same Pod UID and container. | Critical |
+| IP anonymizer unavailable | Fewer than one available replica in two populated 30-second intervals for `caritas/ip-anonymizer`. | Critical |
+| Ingress 5xx rate | Strictly more than 2% of observed requests over five minutes, grouped by ingress namespace and name. | Critical |
 | PVC capacity | Strictly above 75%, 85%, or 95% on its fullest reporting mount. Only the highest applicable tier matches. | Info / Warning / Critical |
 | Node filesystem capacity | Strictly above 85% using the kubelet's node filesystem measurements. | Warning |
 
 Replica checks pair observations for the same resource identity before grouping
 by name. A complete scaled-to-zero or recovered workload contributes zero.
 A missing interval or overlapping streams under a reused name leave the result
-unknown. CrashLoopBackOff reports the Kubernetes condition. A separate alert
-for increases in restart count remains open.
+unknown. CrashLoopBackOff reports the current Kubernetes condition. The restart
+rule joins samples by stable Pod UID and container name through changes of
+runtime container ID. It evaluates containers sampled at both ends of the
+15-minute window. Missing intervals, duplicate streams and observed resets of
+the Kubernetes restart count leave the result unknown.
+
+The ingress rule checks the controller's request counter per series before
+combining statuses and controller replicas. A sampled route with no 5xx
+series has zero observed errors. A route with unchanged, covered counters
+has zero observed requests. Missing or incomplete counter samples leave the
+result unknown.
 
 Storage rules compute the share of capacity unavailable to workloads from
 the kubelet's available bytes and total capacity. The node filesystem figure
