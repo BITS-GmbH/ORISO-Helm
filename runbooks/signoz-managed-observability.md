@@ -162,8 +162,11 @@ population with the cluster inventory during the installed acceptance check.
 Replica checks pair observations for the same resource identity before grouping
 by name. A complete scaled-to-zero or recovered workload contributes zero.
 A missing interval or overlapping streams under a reused name leave the result
-unknown. CrashLoopBackOff reports the current Kubernetes condition. The restart
-rule joins samples by stable Pod UID and container name through changes of
+unknown. CrashLoopBackOff reports the current Kubernetes condition. Its
+evaluation and readiness check exclude a Pod when one phase stream identifies
+its UID as Succeeded or Failed within five minutes. A missing or ambiguous
+phase leaves the container in scope. The restart rule joins samples by stable
+Pod UID and container name through changes of
 runtime container ID. It evaluates containers sampled at both ends of the
 15-minute window. Missing intervals, duplicate streams and observed resets of
 the Kubernetes restart count leave the result unknown.

@@ -542,6 +542,24 @@ def _certificate_expiry(selector: str, scrape: str, grouping: str) -> str:
     )
 
 
+def _crashloop_query(selector: str, scope: str, grouping: str, *, guarded: bool) -> str:
+    pod_identity = ", ".join(json.dumps(field) for field in (
+        *PLATFORM_SCOPE, "k8s.namespace.name", "k8s.pod.name", "k8s.pod.uid",
+    ))
+    phase = '{"k8s.pod.phase",' + scope + ',"k8s.pod.uid"!=""}'
+    latest = f"last_over_time({phase}[5m])"
+    # The cluster receiver emits Succeeded as 3 and Failed as 4. Only
+    # an unambiguous terminal Pod UID may leave the reporting population.
+    one_phase = f"count by ({pod_identity}) (present_over_time({phase}[5m])) == 1"
+    terminal = f"(({latest} == 3 or {latest} == 4) and on ({pod_identity}) ({one_phase}))"
+    exclude_terminal = f"unless on ({pod_identity}) {terminal}"
+    if not guarded:
+        return f"max by ({grouping}) (present_over_time({selector}[5m]) {exclude_terminal})"
+    violation = f"({_last_in_slot(selector)} > bool 0) {exclude_terminal}"
+    fresh = f"present_over_time({selector}[30s]) {exclude_terminal}"
+    return f"max by ({grouping}) ({violation}) and (count by ({grouping}) ({fresh}) == 1)"
+
+
 def _platform_query(
     slug: str, environment: str, cluster_name: str, *, guarded: bool,
 ) -> dict[str, Any]:
@@ -565,6 +583,8 @@ def _platform_query(
         expression = _restart_increase(selectors[0], grouping, guarded=guarded)
     elif kind == "keycloak-login":
         expression = _keycloak_login_spike(*selectors, grouping, guarded=guarded)
+    elif kind == "crashloop":
+        expression = _crashloop_query(selectors[0], scope, grouping, guarded=guarded)
     elif not guarded:
         population = " or ".join(f"present_over_time({selector}[5m])" for selector in selectors)
         expression = f"max by ({grouping}) ({population})"
@@ -584,8 +604,6 @@ def _platform_query(
                 suffix = f" offset {offset}s" if offset else ""
                 clauses.append(f"present_over_time({selector}[30s]{suffix})")
             violation = " and ".join(clauses)
-        elif kind == "crashloop":
-            violation = f"({_last_in_slot(selector)} > bool 0)"
         elif kind == "anonymizer":
             violation = (
                 f"(max_over_time({selector}[1m]) < bool 1) and (min_over_time({selector}[1m]) >= 0)"

@@ -154,6 +154,24 @@ class AssetContractTest(unittest.TestCase):
         self.assertIn("present_over_time", readiness)
         self.assertNotIn("sum_over_time", readiness)
 
+    def test_crashloop_queries_exclude_only_unambiguous_terminal_pod_uids(self) -> None:
+        scope = '"deployment.environment"="dev","k8s.cluster.name"="oriso-dev"'
+        pod = '"deployment.environment", "k8s.cluster.name", "k8s.namespace.name", "k8s.pod.name", "k8s.pod.uid"'
+        phase = '{"k8s.pod.phase",' + scope + ',"k8s.pod.uid"!=""}'
+        status = '{"k8s.container.status.reason",' + scope + ',"k8s.container.status.reason"="CrashLoopBackOff"}'
+        for guarded in (False, True):
+            with self.subTest(guarded=guarded):
+                query = MODULE._platform_query("platform-crashloop-backoff", "dev", "oriso-dev", guarded=guarded)["query"]
+                self.assertIn(f"last_over_time({phase}[5m]) == 3", query)
+                self.assertIn(f"last_over_time({phase}[5m]) == 4", query)
+                self.assertIn(f"count by ({pod}) (present_over_time({phase}[5m])) == 1", query)
+                status_checks = (
+                    (f"(last_over_time({status}[30s]) > bool 0)", f"present_over_time({status}[30s])")
+                    if guarded else (f"present_over_time({status}[5m])",)
+                )
+                for check in status_checks:
+                    self.assertIn(f"{check} unless on ({pod})", query)
+
     def test_certificate_expiry_uses_the_certificate_namespace_and_clock(self) -> None:
         slug = "platform-certificate-expiring"
         _, alerts = MODULE.load_assets(ASSETS, platform_alerts=True)
