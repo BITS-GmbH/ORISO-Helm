@@ -191,11 +191,6 @@ spec:
                 configMapKeyRef:
                   key: FEATURE_DEMOGRAPHICS_ENABLED
                   name: agencyservice-configmap-env
-            - name: JAVA_OPTS
-              valueFrom:
-                configMapKeyRef:
-                  key: JAVA_OPTS
-                  name: agencyservice-configmap-env
             - name: USER_ADMIN_SERVICE_API_URL
               valueFrom:
                 configMapKeyRef:
