@@ -264,6 +264,38 @@ Configure the external runner to deliver incidents and recovery to the
 approved operations destination. The SigNoz heartbeat uses a separate
 receiver and tracks whether the collector continues to supply samples.
 
+#### Schedule the check on Linux
+
+The systemd service runs once a minute with a transient account and a
+45-second deadline. It uses the host trust store and allows outbound DNS
+and HTTPS. The service needs Python 3.10 or newer and systemd 246 or newer.
+[Unit files](systemd/)
+
+On the approved runner, install `scripts/signoz_external_uptime.py` as
+`/opt/oriso/signoz-uptime/signoz_external_uptime.py`. Make the path and file
+readable by the service and writable only by the operator. Install
+`oriso-signoz-uptime.service` and `oriso-signoz-uptime.timer` from
+`runbooks/systemd` in `/etc/systemd/system`, then run these commands.
+
+```sh
+systemd-analyze verify /etc/systemd/system/oriso-signoz-uptime.service \
+  /etc/systemd/system/oriso-signoz-uptime.timer
+systemctl daemon-reload
+systemctl enable --now oriso-signoz-uptime.timer
+systemctl show oriso-signoz-uptime.service \
+  -p Result -p ExecMainCode -p ExecMainStatus -p ExecMainExitTimestamp
+journalctl -u oriso-signoz-uptime.service -n 10 --no-pager
+```
+
+Use the exit code and corresponding JSON record from a freshly completed
+invocation. A normal process exit with code 0 and an OK record confirms
+recovery. Route codes 1 through 3 according to the table above. Consume the
+unit journal in order and resume ingestion from the last processed cursor.
+Correlate the probe record and manager outcome by invocation ID so a later
+success preserves visibility of a preceding failure. Treat timeouts, startup
+failures, missing records and stale results as probe failures. Monitor missed
+executions from outside the runner so a stopped timer or host is also detected.
+
 ## Proof
 
 ClickHouse, from the Dev master (heredoc, because quoting over ssh breaks):
