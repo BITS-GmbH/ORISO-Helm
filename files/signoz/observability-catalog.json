@@ -52,6 +52,17 @@
     "severity": "critical",
     "clusterScoped": true
   },
+  "platformNodeAlert": {
+    "slug": "platform-node-not-ready",
+    "title": "Kubernetes node is not ready",
+    "description": "A Dev node reports NotReady or Unknown throughout four successive 30-second sampling intervals. Check its Ready condition, kubelet and node events. See Operations monitoring, section 3.8.",
+    "metric": "k8s.node.condition",
+    "timeAggregation": "latest",
+    "spaceAggregation": "max",
+    "op": "above",
+    "target": 0,
+    "severity": "critical"
+  },
   "alerts": [
     {"slug": "provisioning-compensation-failure", "title": "Provisioning compensation is incomplete", "description": "A UserService provisioning rollback left at least one resource unrepaired.", "metric": "userservice.provisioning.compensation.attempts", "timeAggregation": "rate", "spaceAggregation": "sum", "filter": "outcome = 'partial_failure'", "op": "above", "target": 0, "severity": "critical"},
     {"slug": "availability-store-failure", "title": "Live-chat availability store failed", "description": "Redis-backed live-chat availability operations are failing closed.", "metric": "oriso.live_chat.availability.store.operations", "timeAggregation": "rate", "spaceAggregation": "sum", "filter": "outcome = 'failure'", "op": "above", "target": 0, "severity": "critical"},

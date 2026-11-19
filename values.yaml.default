@@ -722,6 +722,9 @@ signoz:
   orisoObservability:
     enabled: false
     conformanceCheck: false
+    # Optional Dev platform rules in the managed catalog.
+    platformAlerts:
+      enabled: false
     deploymentIdentity:
       enabled: false
       # Approved deployment pin and runtime digest set for each Java workload.

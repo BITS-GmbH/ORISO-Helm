@@ -41,6 +41,9 @@ class State:
         self.dashboards: dict[str, dict[str, Any]] = {}
         self.rules: dict[str, dict[str, Any]] = {}
         self.queries = 0
+        self.platform_nodes: dict[str, int] = {"node-a": 1, "node-b": 0}
+        self.covered_platform_nodes: dict[str, int] = {"node-a": 0, "node-b": 1}
+        self.stale_platform_samples = False
         self.query_results: dict[str, list[dict[str, Any]]] = {}
         self.trace_responses: dict[str, dict[str, Any]] = {}
         self.browser_vitals_queries: list[dict[str, Any]] = []
@@ -140,7 +143,27 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(self.state.browser_vitals_status, self.state.browser_vitals_response)
                 return
-            query = body["compositeQuery"]["queries"][0]["spec"]
+            entry = body["compositeQuery"]["queries"][0]
+            query = entry["spec"]
+            if entry["type"] == "promql":
+                nodes = (self.state.platform_nodes if "last_over_time" in query["query"]
+                         else self.state.covered_platform_nodes)
+                self._send(200, {
+                    "type": "time_series",
+                    "data": {"results": [{"queryName": "A", "aggregations": [{
+                        "index": 0,
+                        "series": [{
+                            "labels": [{"key": {"name": key}, "value": label} for key, label in (
+                                ("k8s.node.name", name), ("k8s.cluster.name", "oriso-dev"),
+                                ("deployment.environment", "dev"),
+                            )],
+                            "values": [{"timestamp": body["end"] - (
+                                60_000 if self.state.stale_platform_samples else 0
+                            ), "value": value}],
+                        } for name, value in nodes.items()],
+                    }]}]},
+                })
+                return
             if query["signal"] in {"traces", "logs"}:
                 alias = query["aggregations"][0].get("alias", "")
                 response = self.state.trace_responses.get(alias) if query["signal"] == "traces" else None
@@ -448,6 +471,61 @@ class HttpFlowTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "created by hand"):
             self._main("--mode", "provision")
         self.assertEqual(self._counts(), (0, 0, 0, 0))
+
+    def test_platform_rule_requires_current_coverage_before_writing_assets(self) -> None:
+        args = ("--environment", "dev", "--cluster-name", "oriso-dev")
+        self.state.covered_platform_nodes = {"node-a": 0}
+        with self.assertRaisesRegex(RuntimeError, "complete node readiness data"):
+            self._main("--mode", "provision", "--platform-alerts", *args)
+        self.assertEqual(self._counts(), (0, 0, 0, 0))
+
+        self.state.covered_platform_nodes = {"node-a": 0, "node-b": 1}
+        self.state.stale_platform_samples = True
+        with self.assertRaisesRegex(RuntimeError, "complete node readiness data"):
+            self._main("--mode", "provision", "--platform-alerts", *args)
+        self.assertEqual(self._counts(), (0, 0, 0, 0))
+
+    def test_platform_rule_reconciles_the_same_id_after_opt_out(self) -> None:
+        config = ("--mode", "provision", "--environment", "dev", "--cluster-name", "oriso-dev")
+        for _ in range(2):
+            self._main(*config, "--platform-alerts")
+        rule_id, saved = next(
+            (rid, item) for rid, item in self.state.rules.items()
+            if item["alert"] == "ORISO dev | Kubernetes node is not ready"
+        )
+        self.assertEqual(self._counts(), (3, 7, 0, 0))
+        self.assertFalse(saved["disabled"])
+
+        self.state.covered_platform_nodes = {}
+        queries_before = self.state.queries
+        self._main(*config)
+        self.assertEqual(self._counts(), (3, 7, 0, 0))
+        self.assertTrue(self.state.rules[rule_id]["disabled"])
+        self.assertEqual(self.state.queries, queries_before)
+
+        self.state.covered_platform_nodes = {"node-a": 0, "node-b": 1}
+        self._main(*config, "--platform-alerts")
+        self.assertFalse(self.state.rules[rule_id]["disabled"])
+        self.assertEqual(self._counts(), (3, 7, 0, 0))
+
+    def test_platform_rule_rejects_ambiguous_ids(self) -> None:
+        args = ("--mode", "provision", "--environment", "dev", "--cluster-name", "oriso-dev")
+        for rid in ("manual-1", "manual-2"):
+            self.state.rules[rid] = {"id": rid, "alert": "ORISO dev | Kubernetes node is not ready"}
+        for flag in ((), ("--platform-alerts",)):
+            with self.assertRaisesRegex(RuntimeError, "ambiguous ownership"):
+                self._main(*args, *flag)
+            self.assertEqual(self._counts(), (0, 2, 0, 0))
+
+    def test_platform_rule_detects_unmanaged_name_before_writes(self) -> None:
+        args = ("--mode", "provision", "--environment", "dev", "--cluster-name", "oriso-dev")
+        existing = {"id": "manual", "alert": "ORISO dev | Kubernetes node is not ready", "disabled": False}
+        self.state.rules["manual"] = existing.copy()
+        with self.assertRaisesRegex(RuntimeError, "platform alert name is already in use"):
+            self._main(*args, "--platform-alerts")
+        self.assertEqual(self._counts(), (0, 1, 0, 0))
+        self._main(*args)
+        self.assertEqual(self.state.rules["manual"], existing)
 
     def test_test_rule_without_series_reports_not_sent(self) -> None:
         self.state.test_rule_alert_count = 0

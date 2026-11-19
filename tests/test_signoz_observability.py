@@ -29,6 +29,34 @@ class AssetContractTest(unittest.TestCase):
             channel_name="oriso-alerts-slack",
         )
 
+    def test_platform_rule_readback_detects_query_evaluation_and_route_drift(self) -> None:
+        dashboards, alerts = MODULE.load_assets(ASSETS, platform_alerts=True)
+        scope = {"environment": "dev", "cluster_name": "oriso-dev", "channel_name": "oriso-alerts-slack"}
+        dashboards, alerts = MODULE.materialize_assets(dashboards, alerts, **scope)
+        MODULE.validate_asset_contract(dashboards, alerts, **scope)
+        expected = alerts[-1]
+        baseline = json.loads(json.dumps(expected))
+        def validate(current):
+            return MODULE.validate_live_alert(
+                current, expected, environment=scope["environment"], channel_name=scope["channel_name"],
+            )
+
+        validate(baseline)
+        for drift, error in (
+            (("condition", "selectedQueryName"), "query"),
+            (("evaluation", "spec", "frequency"), "evaluation"),
+            (("notificationSettings", "groupBy"), "grouping"),
+            (("condition", "thresholds", "kind"), "threshold"),
+        ):
+            with self.subTest(drift=drift):
+                current = json.loads(json.dumps(baseline))
+                value = current
+                for key in drift[:-1]:
+                    value = value[key]
+                value[drift[-1]] = "wrong"
+                with self.assertRaisesRegex(RuntimeError, f"stored alert {error} drift"):
+                    validate(current)
+
     def test_assets_cover_diagnosis_and_platform_failure_modes(self) -> None:
         self.assertEqual(
             {item["name"] for item in self.dashboards},

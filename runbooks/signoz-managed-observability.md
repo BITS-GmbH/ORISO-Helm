@@ -130,6 +130,28 @@ group keys. A numeric zero is valid. The optional E2E dashboards accept valid
 empty or sparse query results and legacy rows with a blank test ID. Verify their
 contents after a known test run as part of ORISO-E2E#97.
 
+## Dev platform readiness alert
+
+`signoz.orisoObservability.platformAlerts.enabled` defaults to `false`. Enable it
+on Dev after the named Kubernetes collector is reporting. The provisioner
+requires four populated 30-second intervals per recently reporting node at
+the same evaluation point. A gap or overlapping streams under a reused node
+name leave that node's condition unknown. A covered healthy node contributes
+zero. Compare the reporting nodes with the cluster node inventory during the
+installed acceptance check.
+
+The Node NotReady rule retains the node name, cluster and environment in its
+PromQL result and groups Slack notifications by environment and node. The
+collector-staleness rule covers loss of collector data. This rule evaluates
+`Ready=False` and `Ready=Unknown` from the observed samples.
+
+Use `--platform-alerts` for a workstation check of an enabled installation.
+To turn it off, set the value to `false` while managed observability still runs.
+The next hook disables the matching ORISO-managed rule in place and retains
+its ID. This path works with missing node telemetry. The six existing catalog
+rules remain managed. See [Helm #542](https://github.com/OpenResilienceInitiative/ORISO-Helm/issues/542)
+for the remaining platform alerts and external monitoring.
+
 ## API key Secret (created out of band, never in values)
 
 ```text
