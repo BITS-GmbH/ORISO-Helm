@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 
 UPTIME = "oriso-signoz-uptime.service"
@@ -19,7 +20,10 @@ UNIT_SUCCEEDED = "7ad2d189f7e94e70a38c781354912448"
 UNIT_FAILED = "d9b373ed55a64feb8242e02dbe79a49c"
 PROCESS_EXIT = "98e322203f7a4ed290d09fe03c09fe15"
 PAGE_SIZE = 24
+MAX_COMPLETION_AGE_SECONDS = 180
 UNIT_MATCHES = ("_PID=1", f"UNIT={UPTIME}", f"UNIT={HEARTBEAT}")
+CADENCE_UNITS = {"uptime": UPTIME, "heartbeat": HEARTBEAT}
+CADENCE_EXIT = {"OK": 0, "CRITICAL": 2, "UNKNOWN": 3}
 PLUGIN_STATES = {
     UPTIME: {1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"},
     HEARTBEAT: {2: "CRITICAL"},
@@ -79,6 +83,23 @@ def classify(completion, details):
     return state, result, status
 
 
+def invocation_ids(rows):
+    values = {row.get("INVOCATION_ID") for row in rows}
+    return sorted(value for value in values if isinstance(value, str) and re.fullmatch("[0-9a-f]{32}", value))
+
+
+def completion_details(ids, *, options=(), limit=PAGE_SIZE * 4):
+    if not ids:
+        return []
+    details, extra = read_journal(options, (
+        *UNIT_MATCHES, *(f"INVOCATION_ID={value}" for value in ids),
+        f"MESSAGE_ID={UNIT_SUCCEEDED}", f"MESSAGE_ID={UNIT_FAILED}", f"MESSAGE_ID={PROCESS_EXIT}",
+    ), limit)
+    if extra:
+        raise ValueError("too many matching systemd result records")
+    return details
+
+
 def read_page(*, cursor=None, since=None):
     options = [f"--cursor={cursor}"] if cursor is not None else [f"--since={since}"]
     match = (*UNIT_MATCHES, "JOB_TYPE=start", f"MESSAGE_ID={JOB_DONE}", f"MESSAGE_ID={JOB_FAILED}")
@@ -88,16 +109,8 @@ def read_page(*, cursor=None, since=None):
             raise ValueError("cannot resume cursor in system journal")
         rows = rows[1:]
 
-    ids = {row.get("INVOCATION_ID") for row in rows}
-    ids = sorted(value for value in ids if isinstance(value, str) and re.fullmatch("[0-9a-f]{32}", value))
-    details = []
-    if ids:
-        details, extra = read_journal([], (
-            *UNIT_MATCHES, *(f"INVOCATION_ID={value}" for value in ids),
-            f"MESSAGE_ID={UNIT_SUCCEEDED}", f"MESSAGE_ID={UNIT_FAILED}", f"MESSAGE_ID={PROCESS_EXIT}",
-        ), PAGE_SIZE * 4)
-        if extra:
-            raise ValueError("too many matching systemd result records")
+    ids = invocation_ids(rows)
+    details = completion_details(ids)
 
     completed = []
     for row in rows:
@@ -116,12 +129,66 @@ def read_page(*, cursor=None, since=None):
     return {"completed": completed, "next_cursor": rows[-1]["__CURSOR"] if rows else cursor, "more": more}
 
 
+def timer_state(timer):
+    result = subprocess.run(
+        ["/usr/bin/systemctl", "show", "--no-pager", "--property=ActiveState", "--value", timer],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, encoding="utf-8", timeout=4,
+    )
+    state = result.stdout.strip()
+    if state not in {"active", "inactive", "failed", "activating", "deactivating", "reloading", "maintenance"}:
+        raise ValueError("invalid systemd timer state")
+    return state
+
+
+def local_boot_id():
+    boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip().replace("-", "")
+    if not re.fullmatch("[0-9a-f]{32}", boot_id):
+        raise ValueError("invalid current boot ID")
+    return boot_id
+
+
+def check_cadence(unit):
+    result = {"unit": unit}
+    try:
+        if timer_state(unit.removesuffix(".service") + ".timer") != "active":
+            return dict(result, state="CRITICAL", reason="timer-not-active")
+        boot_id = local_boot_id()
+        rows, extra = read_journal((f"--boot={boot_id}", "--lines=1"), (
+            "_PID=1", f"UNIT={unit}", "JOB_TYPE=start", f"MESSAGE_ID={JOB_DONE}", f"MESSAGE_ID={JOB_FAILED}",
+        ), 1)
+        if not rows and not extra:
+            return dict(result, state="CRITICAL", reason="missing-completion")
+        if extra or len(rows) != 1 or rows[0]["UNIT"] != unit or rows[0]["_BOOT_ID"] != boot_id:
+            raise ValueError("unexpected completion record")
+        completion = rows[0]
+        timestamp = int(completion["__MONOTONIC_TIMESTAMP"])
+        age = time.monotonic_ns() // 1000 - timestamp
+        if timestamp <= 0 or age < 0:
+            raise ValueError("invalid current-boot timestamp")
+        result["age_seconds"] = age / 1_000_000
+        if age >= MAX_COMPLETION_AGE_SECONDS * 1_000_000:
+            return dict(result, state="CRITICAL", reason="stale-completion")
+        ids = invocation_ids(rows)
+        details = completion_details(ids, options=(f"--boot={boot_id}",), limit=4)
+        probe_state, service_result, _ = classify(completion, details) if ids else ("UNKNOWN", None, None)
+        if service_result is None:
+            return dict(result, state="UNKNOWN", reason="unattributed-completion")
+        return dict(result, state="OK", reason="recent-completion", last_probe_state=probe_state)
+    except (KeyError, OSError, TypeError, ValueError, subprocess.SubprocessError):
+        return dict(result, state="UNKNOWN", reason="invalid-runner-state")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     start = parser.add_mutually_exclusive_group(required=True)
     start.add_argument("--since", help="Journal start time for the first page")
     start.add_argument("--cursor", help="Last completion cursor accepted by the consumer")
+    start.add_argument("--check-cadence", choices=CADENCE_UNITS, help="Check a running timer and its latest completion")
     args = parser.parse_args()
+    if args.check_cadence:
+        result = check_cadence(CADENCE_UNITS[args.check_cadence])
+        print(json.dumps(result, sort_keys=True))
+        return CADENCE_EXIT[result["state"]]
     try:
         page = read_page(since=args.since, cursor=args.cursor)
     except (KeyError, OSError, TypeError, ValueError) as error:

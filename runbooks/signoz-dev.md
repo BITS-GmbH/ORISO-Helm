@@ -318,6 +318,33 @@ operator can investigate a journal gap. Treat missing or stale results as
 monitoring failures. A successful read with an empty page provides no
 health result.
 
+#### Watch the check runner from another host
+
+Install the same journal reader on the check runner. From the independent
+monitoring host, invoke it once per minute for each installed check over the
+approved SSH route. Use pinned host keys, a bounded SSH deadline and an
+account whose command is restricted to the expected read-only checks.
+Establish a first completed run for each timer before arming its watcher.
+
+```sh
+timeout --kill-after=2s 30s ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -o ConnectTimeout=5 sig-check-runner \
+  python3 /opt/oriso/signoz-uptime/signoz_check_journal.py --check-cadence uptime
+```
+
+Use `--check-cadence heartbeat` against the runner that hosts the heartbeat
+check timer. Alert separately for each check. Exit 0 means its timer is
+active and has an attributable completion younger than 180 seconds on this
+boot. The three-minute window allows for the one-minute schedule and probe
+runtime. The response gives the age in monotonic seconds and the last probe
+state. Use earlier completion pages for the probe's own incident and recovery.
+
+Exit 2 means the timer is inactive or the current boot has no completion
+inside the window. Exit 3 means the runner state or latest completion could
+not be verified. Treat an SSH failure, outer timeout or missing or invalid
+JSON as a separate unreachable-runner incident. Recover each incident only
+after a fresh cadence result succeeds. [systemd journal timestamps](https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html)
+
 ## Proof
 
 ClickHouse, from the Dev master (heredoc, because quoting over ssh breaks):
