@@ -340,6 +340,9 @@ networkPolicies:
   mongodbIngress:
     # Verify out-of-chart consumers for the installation before enabling.
     enabled: false
+  mariadbIngress:
+    # Verify out-of-chart consumers for the installation before enabling.
+    enabled: false
 
 # MariaDB
 online-counseling-mariadb:
