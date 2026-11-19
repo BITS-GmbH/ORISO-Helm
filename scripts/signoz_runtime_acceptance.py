@@ -219,6 +219,7 @@ def build_java_signal_query(environment: str, end_ms: int, since_ms: int | None 
     env = _sql_literal(environment)
     services = ", ".join(_sql_literal(service) for service in JAVA_SERVICES)
     fresh_ms, correlation_ms = _java_signal_starts(end_ms, since_ms)
+    # The tuple predicate prunes the sample sorting key before the join attributes rows to services.
     return f"""WITH recent_logs AS (
     SELECT resources_string['service.name'] AS service_name, timestamp, trace_id, span_id
     FROM signoz_logs.distributed_logs_v2
@@ -257,6 +258,9 @@ SELECT signal, service_name, samples, wrong_environment, invalid_version FROM (
     FROM signoz_metrics.distributed_samples_v4 AS s
     GLOBAL INNER JOIN metric_identities AS i USING (env, temporality, metric_name, fingerprint)
     WHERE s.unix_milli >= {fresh_ms} AND s.unix_milli < {end_ms}
+      AND (s.env, s.temporality, s.metric_name, s.fingerprint) GLOBAL IN (
+        SELECT env, temporality, metric_name, fingerprint FROM metric_identities
+      )
       AND bitAnd(s.flags, 1) = 0 AND isFinite(s.value)
     GROUP BY i.service_name
     UNION ALL

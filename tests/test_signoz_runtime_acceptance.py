@@ -585,6 +585,11 @@ class JavaSignalContractTest(unittest.TestCase):
         self.assertIn("JSONEachRow", command)
         sql = command[-1]
         self.assertIn("signoz_metrics.distributed_samples_v4", sql)
+        self.assertIn(
+            "(s.env, s.temporality, s.metric_name, s.fingerprint) GLOBAL IN (\n"
+            "        SELECT env, temporality, metric_name, fingerprint FROM metric_identities",
+            sql,
+        )
         self.assertIn("(service_name, trace_id, span_id) GLOBAL IN", sql)
         self.assertIn("resources_string['deployment.environment'] = 'dev'", sql)
         return mock.Mock(stdout="\n".join(json.dumps(row) for row in self.rows))
