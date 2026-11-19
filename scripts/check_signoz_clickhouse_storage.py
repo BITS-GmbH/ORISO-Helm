@@ -99,7 +99,35 @@ def data_claim_names(template, statefulsets, pods):
     return sorted(names)
 
 
-def storage_failures(current, target, claims):
+def _statefulset_storage_failures(statefulsets, template_name, planned_bytes):
+    failures = []
+    for statefulset in statefulsets:
+        name, spec = statefulset["metadata"]["name"], statefulset["spec"]
+        templates = [
+            template for template in spec.get("volumeClaimTemplates", [])
+            if template["metadata"]["name"] == template_name
+        ]
+        if not templates:
+            # Operator-provisioned claims can be referenced without a StatefulSet template.
+            continue
+        template, = templates
+        current_bytes = byte_count(template["spec"]["resources"]["requests"]["storage"])
+        if planned_bytes < current_bytes:
+            failures.append(
+                f"Planned {planned_bytes} bytes is smaller than the StatefulSet {name} "
+                f"data claim template of {current_bytes} bytes."
+            )
+        if planned_bytes <= current_bytes:
+            continue
+        # An immutable template change can send Altinity through scale-down and recreation.
+        policy = spec.get("persistentVolumeClaimRetentionPolicy") or {}
+        unsafe = [key for key in ("whenScaled", "whenDeleted") if policy.get(key, "Retain") != "Retain"]
+        if unsafe:
+            failures.append(f"StatefulSet {name} must retain data claims on recreation ({', '.join(unsafe)}).")
+    return failures
+
+
+def storage_failures(current, target, claims, statefulsets=()):
     old_template, old_bytes = _data_template(current)
     new_template, planned_bytes = _data_template(target)
     if old_template != new_template:
@@ -108,7 +136,7 @@ def storage_failures(current, target, claims):
         raise ValueError("the plan changes ClickHouse cluster topology")
     if not claims:
         raise ValueError("no live ClickHouse data claims")
-    failures = []
+    failures = _statefulset_storage_failures(statefulsets, old_template["name"], planned_bytes)
     if planned_bytes < old_bytes:
         failures.append(f"Planned {planned_bytes} bytes is smaller than the installation request of {old_bytes} bytes.")
     for claim in claims:
@@ -155,7 +183,7 @@ def main():
         claims = readback["items"] if readback["kind"] == "List" else [readback]
         if sorted(item["metadata"]["name"] for item in claims) != names:
             raise ValueError("ClickHouse data claim readback is incomplete")
-        failures = storage_failures(current, target, claims)
+        failures = storage_failures(current, target, claims, statefulsets)
     except (AttributeError, KeyError, TypeError, OSError, RecursionError, RuntimeError,
             ValueError, subprocess.SubprocessError, yaml.YAMLError) as error:
         if type(error) in {ValueError, RuntimeError}:

@@ -370,10 +370,25 @@ report more capacity than requested. Confirm the desired size with the
 operator if the planned request falls below the reported capacity.
 
 Confirm the StorageClass supports expansion and record the current PVC and
-filesystem capacity before a size change. After the operator and CSI
-reconcile, read back the same claims, provisioned capacity and writable
-ClickHouse space. A server dry-run proves that Kubernetes admits the request.
-Use the actual provisioned capacity and filesystem readback to verify recovery.
+filesystem capacity before a size change. Record the PVC UID, bound PV name
+and reclaim policy, and the StatefulSet and Pod UIDs. The preflight also
+compares the size against the live StatefulSet's data claim template. Growing
+that template requires the StatefulSet to retain data claims both when it
+scales down and when it is deleted. Kubernetes defaults either unset field
+to `Retain`.
+
+Plan the expansion for an approved maintenance window. Altinity 0.21.2 falls
+back to recreating the StatefulSet when the Kubernetes update fails on an
+immutable claim template. It scales the old StatefulSet to zero first.
+This interrupts the single-replica Dev ClickHouse installation.
+[Operator update and recreation](https://github.com/Altinity/clickhouse-operator/blob/0.21.2/pkg/controller/chi/worker.go#L1463-L1491)
+· [StatefulSet claim retention](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#persistentvolumeclaim-retention)
+
+After the operator and CSI reconcile, require the same PVC UID and PV binding,
+the approved size in both the claim request and reported capacity, and a Ready
+ClickHouse Pod on the retained claim. Check the mounted filesystem and
+ClickHouse's unreserved writable space before running the SigNoz signal
+acceptance checks. Server dry-run admission is a preflight checkpoint.
 
 The Dev overlay sets a three-day deletion TTL for new `query_log`, `part_log`,
 `trace_log`, `asynchronous_metric_log`, `metric_log`, `zookeeper_log`,

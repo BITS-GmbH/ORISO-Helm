@@ -31,6 +31,16 @@ def claim(name, request, capacity):
     }
 
 
+def statefulset(size, retention=None):
+    specification = {"volumeClaimTemplates": [{
+        "metadata": {"name": "data"},
+        "spec": {"resources": {"requests": {"storage": size}}},
+    }]}
+    if retention is not None:
+        specification["persistentVolumeClaimRetentionPolicy"] = retention
+    return {"metadata": {"name": "chi-0"}, "spec": specification}
+
+
 class ClickHouseStorageGuardTest(TestCase):
     def test_candidate_must_preserve_request_and_capacity_across_all_claims(self):
         claims = [
@@ -48,6 +58,35 @@ class ClickHouseStorageGuardTest(TestCase):
         live = installation("30Gi")
         failures = storage.storage_failures(live, installation("20Gi"), [claim("data", "20Gi", "20Gi")])
         self.assertIn("installation", " ".join(failures))
+
+    def test_recreation_requires_retention_when_live_statefulset_template_grows(self):
+        current = installation("30Gi")
+        claims = [claim("data", "30Gi", "30Gi")]
+        for trigger in ("whenScaled", "whenDeleted"):
+            with self.subTest(trigger=trigger):
+                failures = storage.storage_failures(current, current, claims, [
+                    statefulset("20Gi", {trigger: "Delete"}),
+                ])
+                self.assertEqual(len(failures), 1)
+                self.assertIn("chi-0", failures[0])
+                self.assertIn(trigger, failures[0])
+
+    def test_statefulset_resize_accepts_default_retention_and_equivalent_sizes(self):
+        claims = [claim("data", "20Gi", "20Gi")]
+        self.assertEqual(storage.storage_failures(
+            installation(), installation("30Gi"), claims, [statefulset("20Gi")],
+        ), [])
+        self.assertEqual(storage.storage_failures(
+            installation(), installation(), claims, [statefulset("21474836480", {"whenScaled": "Delete"})],
+        ), [])
+
+    def test_statefulset_template_remains_a_floor_during_partial_reconciliation(self):
+        current = installation("20Gi")
+        failures = storage.storage_failures(
+            current, current, [claim("data", "20Gi", "20Gi")], [statefulset("30Gi")],
+        )
+        self.assertEqual(len(failures), 1)
+        self.assertIn("StatefulSet chi-0", failures[0])
 
     def test_removal_rebinding_or_topology_change_is_rejected(self):
         live = installation()
