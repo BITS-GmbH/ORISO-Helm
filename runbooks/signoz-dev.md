@@ -298,7 +298,9 @@ its own approved network and identity setup.
 
 The ingress controller runs in the namespace `ingress-nginx`, outside the Helm
 release. `global.observability.externalIngressNginxNamespace: ingress-nginx`
-(Dev) makes the cluster collector scrape its pod IPs on port 10254. The chart
+(Dev) makes the cluster collector scrape its pod IPs on port 10254. This
+setting requires `signozCollector.enabled=true`. It works with general
+application metrics disabled. The chart
 cannot switch metrics on in the controller: it must run with
 `--enable-metrics=true` (Dev does since 2026-11-06). The collector's cluster
 ClusterRole already allows `list`/`watch` on pods in all namespaces.

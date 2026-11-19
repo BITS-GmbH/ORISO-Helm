@@ -56,6 +56,9 @@ URL. Fail fast when the env var is missing or still points at another domain
 {{- if and (eq (include "oriso.appMetrics.enabled" .) "true") (not $collectorEnabled) -}}
 {{- fail "global.observability.appMetrics=true requires signozCollector.enabled=true: the cluster collector scrapes the application metrics" -}}
 {{- end -}}
+{{- if and (get $globalObservability "externalIngressNginxNamespace") (not $collectorEnabled) -}}
+{{- fail "global.observability.externalIngressNginxNamespace requires signozCollector.enabled=true: the cluster collector scrapes the external ingress controller" -}}
+{{- end -}}
 {{- if and (eq (include "oriso.dbMetrics.enabled" .) "true") (not $collectorEnabled) -}}
 {{- fail "global.observability.dbMetrics=true requires signozCollector.enabled=true: the cluster collector reads the data store metrics" -}}
 {{- end -}}
