@@ -65,7 +65,10 @@ The public status view remains available without login as required by
 Before selecting that mode, verify that the installed image includes the
 public-mode changes and that `ORISO_PUBLIC_MODE` is enabled. Set
 `healthDashboard.ingress.basicAuth` to `false` as a boolean in the environment
-overlay. The chart rejects this setting when public mode is disabled.
+overlay. To keep public mode enabled, omit
+`healthDashboard.env.ORISO_PUBLIC_MODE` to use the default or set it to
+`"true"`. With Basic Authentication disabled, the chart rejects both the YAML
+boolean `false` and the string `"false"` for that value.
 The public view omits the Helm image inventory, internal service URLs and
 raw health responses. Operator-only routes stay unavailable while role-based
 access is tracked in
