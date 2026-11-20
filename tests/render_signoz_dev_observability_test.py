@@ -903,12 +903,20 @@ def assert_signal_backup(dev: dict[tuple[str, str], dict[str, Any]]) -> None:
                                       "readOnly": True}]}, "signalBackup needs signoz.clickhouse to mount claim"),
         ({"files": {"config.d/97-oriso-signal-backup-disk.xml": None}}, "signalBackup needs signoz.clickhouse to mount claim"),
         ({"layout": {"shardsCount": 1, "replicasCount": 2}}, "supports one ClickHouse shard and replica"),
-        ({"enabled": False}, "requires the embedded ClickHouse in the release namespace"),
-        ({"namespace": "telemetry"}, "requires the embedded ClickHouse in the release namespace"),
     ):
-        external = {"externalClickhouse": {"host": "clickhouse.example"}} if clickhouse == {"enabled": False} else {}
-        error = render_dev_fails({"signoz": {"clickhouse": clickhouse, **external}})
+        error = render_dev_fails({"signoz": {"clickhouse": clickhouse}})
         assert message in error, (clickhouse, error)
+    # External ClickHouse: nothing embedded to back up, so nothing renders.
+    external = render_dev_with({"signoz": {"clickhouse": {"enabled": False},
+                                           "externalClickhouse": {"host": "clickhouse.example"}}})
+    assert not any("signal-backup" in name for _, name in external)
+    # ClickHouse in its own namespace: the claim, script, Secret and CronJob follow it.
+    split = render_dev_with({"signoz": {"clickhouse": {"namespace": "telemetry"}}})
+    signal = {kind: doc for (kind, name), doc in split.items() if "signal-backup" in name}
+    assert set(signal) == {"PersistentVolumeClaim", "ConfigMap", "Secret", "CronJob"}, set(signal)
+    assert {doc["metadata"]["namespace"] for doc in signal.values()} == {"telemetry"}
+    assert "telemetry/signoz-clickhouse-signal-backup" in retain_claims(split)
+    assert env(signal["CronJob"]["spec"]["jobTemplate"])["CLICKHOUSE_URL"] == "http://caritas-clickhouse.telemetry.svc:8123/"
     # Off by default: no claim, CronJob or retain entry outside Dev.
     off = render_dev_with({"signoz": {"orisoDataProtection": {"signalBackup": {"enabled": False}},
                                       "clickhouse": {"additionalVolumes": [], "additionalVolumeMounts": []}}})
