@@ -38,6 +38,7 @@ global:
       enabled: false
     # The external ingress-nginx controller exists only on Dev.
     externalIngressNginxNamespace: ""
+    externalCertManagerNamespace: ""
   # Pre-Dev keeps its existing database; do not seed dummy data.
   initializeDummyData: false
   matrix:

@@ -41,6 +41,8 @@ global:
     # Optional cluster-owned ingress-nginx controller to scrape. Environment
     # overlays must opt in because this chart does not install the controller.
     externalIngressNginxNamespace: ""
+    # Optional namespace of the cluster-owned cert-manager controller.
+    externalCertManagerNamespace: ""
     dbMetrics: false
     tracingSamplingProbability: ""
     testRunBaggage: false
@@ -730,6 +732,13 @@ signoz:
   orisoObservability:
     enabled: false
     conformanceCheck: false
+    # Optional Dev platform rules in the managed catalog.
+    platformAlerts:
+      enabled: false
+    # Optional Dev heartbeat. Its pre-created webhook is separate from Slack.
+    heartbeat:
+      enabled: false
+      channelName: oriso-dev-heartbeat
     deploymentIdentity:
       enabled: false
       # Approved deployment pin and runtime digest set for each Java workload.
