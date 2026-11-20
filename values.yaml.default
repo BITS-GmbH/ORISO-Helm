@@ -333,11 +333,15 @@ admin:
   imageVersion: "dev"
 # MongoDB
 online-counseling-mongodb:
+  # Size container requests and limits in the environment overlay.
+  resources: {}
   imageName: "mongo"
   imageVersion: "5.0"
 
 # MariaDB
 online-counseling-mariadb:
+  # Size container requests and limits in the environment overlay.
+  resources: {}
   imageName: "mariadb"
   imageVersion: "11.0.6"
   maxconnections: "1000"
@@ -588,6 +592,8 @@ addonService:
 
 # User service
 userService:
+  # Size container requests and limits in the environment overlay.
+  resources: {}
   accountInactivity:
     enabled: false
     dryRun: true
