@@ -119,6 +119,23 @@ service and deployment environment. The command exits 1 on missing signals or
 trace identity violations and returns aggregate counts. For release evidence,
 run the full command once the fresh window reflects the reviewed rollout.
 
+When pod exec is unavailable, run the same read-only check through the trusted
+SigNoz HTTPS base URL for the environment. On Dev, use the canonical
+`https://dev.oriso.org/signoz/` URL. Set `SIGNOZ_API_KEY` in the process
+environment through the private credential route. The key needs access to the
+SigNoz V5 ClickHouse SQL query API.
+
+```bash
+python3 scripts/signoz_runtime_acceptance.py \
+  --namespace caritas --release caritas --environment dev \
+  --check-java-signals --signoz-url https://dev.oriso.org/signoz/
+```
+
+For either transport, pass `--since-unix-ms` with the start of a reviewed
+rollout or recovery to exclude older log, trace and metric samples. The
+timestamp can shorten the usual lookback windows. The JSON report includes the
+effective start of each window.
+
 ## Read ClickHouse retention and disk usage
 
 Run the metadata check against the target environment and its SSH host.
