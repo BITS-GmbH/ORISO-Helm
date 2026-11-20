@@ -740,7 +740,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-          resources: {}
+          resources: {{- toYaml (.Values.userService.resources | default dict) | nindent 12 }}
           securityContext:
             {{- include "oriso.containerSecurityContext" (dict) | nindent 12 }}
           volumeMounts:
