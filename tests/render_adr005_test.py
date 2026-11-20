@@ -62,7 +62,7 @@ TEMPLATES = [
     "templates/_matrixGroupPolicy.tpl",
     "templates/matrix/matrix-configmaps.yaml",
     "templates/matrix/matrix-deployment.yaml",
-    "templates/matrix/matrix-registration-secret.yaml",
+    "templates/matrix/matrix-synapse-credentials.yaml",
     "templates/userservice/userservice-configmap-env.yaml",
     "templates/agencyservice/agencyservice-configmap-env.yaml",
     "templates/tenantservice/tenantservice-configmap-env.yaml",

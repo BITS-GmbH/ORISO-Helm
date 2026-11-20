@@ -95,7 +95,7 @@ spec:
             - name: MATRIX_REGISTRATION_SHARED_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: matrix-synapse-registration-secret
+                  name: matrix-synapse-credentials
                   key: registration-shared-secret
             {{- end }}
             - name: TARGET_SECRET_NAME

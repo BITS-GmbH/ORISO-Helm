@@ -77,7 +77,7 @@ def main():
            error='matrix.groupPolicy.enabled must be a boolean')
     reserved_secrets = [
         'matrix-secrets', 'userservice-secret', 'keycloak-secret', 'redis-secret',
-        'keycloak-backend-client-secrets', 'matrixrtc-auth-secrets', 'matrix-synapse-registration-secret',
+        'keycloak-backend-client-secrets', 'matrixrtc-auth-secrets', 'matrix-synapse-credentials',
     ]
     for secret_name in reserved_secrets:
         render(*enabled, '--set', f'matrix.groupPolicy.existingSecret.name={secret_name}',

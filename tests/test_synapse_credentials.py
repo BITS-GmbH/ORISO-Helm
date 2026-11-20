@@ -1,4 +1,4 @@
-"""Verify that Synapse and its chart callers use the same Secret-backed value."""
+"""Verify that Synapse and its chart peers use the same Secret-backed credentials."""
 
 from base64 import b64decode
 import json
@@ -11,7 +11,7 @@ from render_synapse_config_loaded_test import loaded_files, render
 
 
 CANARY = "render-only: matrix registration # secret"
-SOURCE = ("Secret", "matrix-synapse-registration-secret")
+SOURCE = ("Secret", "matrix-synapse-credentials")
 KEY = "registration-shared-secret"
 JOB = ("Job", "matrixrtc-bootstrap-token")
 
@@ -25,7 +25,7 @@ def synapse_pod(resources):
     return resources["Deployment", "matrix-synapse"]["spec"]["template"]
 
 
-class MatrixRegistrationSecretTest(unittest.TestCase):
+class SynapseCredentialsTest(unittest.TestCase):
     def test_loaded_secret_exists_in_both_database_modes(self):
         for engine in ("sqlite3", "postgres"):
             with self.subTest(engine=engine):
@@ -39,7 +39,11 @@ class MatrixRegistrationSecretTest(unittest.TestCase):
 
                 deployment = resources["Deployment", "matrix-synapse"]
                 files = loaded_files(deployment, documents)
-                self.assertEqual(set(files), {"/data/homeserver.yaml", "/secrets/synapse/homeserver-database.yaml"})
+                self.assertEqual(set(files), {
+                    "/data/homeserver.yaml",
+                    "/secrets/synapse/homeserver-database.yaml",
+                    "/secrets/synapse-credentials/homeserver-redis.yaml",
+                })
                 kind, name, key = files["/data/homeserver.yaml"]
                 homeserver = yaml.safe_load(resources[kind, name]["data"][key])
                 self.assertNotIn("registration_shared_secret", homeserver)
@@ -52,7 +56,10 @@ class MatrixRegistrationSecretTest(unittest.TestCase):
                 self.assertTrue(mount["readOnly"])
                 volume, = [v["secret"] for v in spec["volumes"] if v["name"] == mount["name"]]
                 self.assertEqual(volume["secretName"], SOURCE[1])
-                self.assertEqual(volume["items"], [{"key": KEY, "path": path.name}])
+                self.assertEqual(volume["items"], [
+                    {"key": KEY, "path": path.name},
+                    {"key": "homeserver-redis.yaml", "path": "homeserver-redis.yaml"},
+                ])
                 self.assertTrue(volume.get("defaultMode", 0o644) & 0o004)
                 self.assertEqual(b64decode(resources[SOURCE]["data"][KEY]).decode(), CANARY)
                 for service in ("userservice", "agencyservice", "tenantservice"):
@@ -61,14 +68,44 @@ class MatrixRegistrationSecretTest(unittest.TestCase):
                 args = container["args"]
                 self.assertEqual(args[args.index("--keys-directory") + 1], "/data")
 
-    def test_value_change_rolls_the_pod_without_changing_the_public_config(self):
+    def test_redis_config_uses_the_same_exact_password_as_the_server(self):
+        password = " render-only: synapse Redis # credential "
+        for engine in ("sqlite3", "postgres"):
+            with self.subTest(engine=engine):
+                documents, resources = chart(
+                    CANARY,
+                    "--set-string", f"global.secrets.redisdefaultPass={password}",
+                    "--set-string", f"matrix.database.engine={engine}",
+                )
+                exposed = [
+                    f"{doc['kind']}/{doc['metadata']['name']}"
+                    for doc in documents
+                    if doc["kind"] != "Secret" and password in json.dumps(doc)
+                ]
+                self.assertEqual(exposed, [])
+                deployment = resources["Deployment", "matrix-synapse"]
+                files = loaded_files(deployment, documents)
+                configmap = resources["ConfigMap", "matrix-homeserver-oidc"]
+                self.assertNotIn("redis", yaml.safe_load(configmap["data"]["homeserver.yaml"]))
+                kind, name, key = files["/secrets/synapse-credentials/homeserver-redis.yaml"]
+                self.assertEqual((kind, name, key), (*SOURCE, "homeserver-redis.yaml"))
+                config = yaml.safe_load(resources[kind, name]["stringData"][key])
+                server_password = resources["Secret", "redis-secret"]["data"]["REDIS_DEFAULT_PASS"]
+                self.assertEqual(b64decode(server_password).decode(), password)
+                self.assertEqual(config["redis"], {
+                    "enabled": True, "host": "redis", "port": 6379, "password": password, "dbid": 0,
+                })
+
+    def test_each_credential_change_rolls_the_pod_without_changing_the_public_config(self):
         _, before = chart()
-        _, after = chart(CANARY + "-replacement")
-        self.assertEqual(before["ConfigMap", "matrix-homeserver-oidc"], after["ConfigMap", "matrix-homeserver-oidc"])
-        old = synapse_pod(before)["metadata"]["annotations"]["checksum/registration-secret"]
-        new = synapse_pod(after)["metadata"]["annotations"]["checksum/registration-secret"]
+        _, next_registration = chart(CANARY + "-replacement")
+        _, next_redis = chart(CANARY, "--set-string", "global.secrets.redisdefaultPass=render-only-new-password")
+        key = "checksum/synapse-credentials"
+        old = synapse_pod(before)["metadata"]["annotations"][key]
         self.assertRegex(old, r"^[a-f0-9]{64}$")
-        self.assertNotEqual(old, new)
+        for after in (next_registration, next_redis):
+            self.assertEqual(before["ConfigMap", "matrix-homeserver-oidc"], after["ConfigMap", "matrix-homeserver-oidc"])
+            self.assertNotEqual(old, synapse_pod(after)["metadata"]["annotations"][key])
 
     def test_bootstrap_uses_the_secret_only_for_provisioning(self):
         for mode, flags in (
