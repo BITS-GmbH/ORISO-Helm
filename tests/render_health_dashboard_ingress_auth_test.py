@@ -260,17 +260,28 @@ class HealthDashboardIngressAuthTest(unittest.TestCase):
                 )
 
     def test_basic_auth_false_requires_public_mode(self) -> None:
-        for value in ("false", "FALSE", " False "):
+        for value in (False, "false", "FALSE", " False "):
             with self.subTest(value=value):
                 error = render(health_dashboard={
                     "ingress": {"enabled": True, "basicAuth": False},
                     "env": {"ORISO_PUBLIC_MODE": value},
                 }, expect_error=True)
                 self.assertIn("healthDashboard.ingress.basicAuth=false makes /health public and requires public mode", error)
+        for value in (True, "true"):
+            with self.subTest(value=value):
+                resources = health_resources(render(health_dashboard={
+                    "ingress": {"enabled": True, "basicAuth": False},
+                    "env": {"ORISO_PUBLIC_MODE": value},
+                }))
+                self.assertNotIn("nginx.ingress.kubernetes.io/auth-type",
+                                 resources["Ingress"]["metadata"]["annotations"])
+
+    def test_basic_auth_allows_private_application_mode(self) -> None:
         resources = health_resources(render(health_dashboard={
-            "ingress": {"enabled": True, "basicAuth": False}, "env": {"ORISO_PUBLIC_MODE": "true"},
+            "ingress": {"basicAuth": True}, "env": {"ORISO_PUBLIC_MODE": False},
         }))
-        self.assertNotIn("nginx.ingress.kubernetes.io/auth-type", resources["Ingress"]["metadata"]["annotations"])
+        self.assertEqual(resources["Ingress"]["metadata"]["annotations"][
+            "nginx.ingress.kubernetes.io/auth-type"], "basic")
 
     def test_basic_auth_rejects_non_boolean(self) -> None:
         for value in ("false", "no", 0, None):
