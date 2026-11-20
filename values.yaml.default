@@ -700,6 +700,9 @@ frontend:
   replicas: 1
   image: "ghcr.io/openresilienceinitiative/oriso-frontend:dev"
 
+# networkPolicies.keycloakIngress.enabled defaults to false. Specify
+# networkPolicies.keycloakIngress.externalNginxNamespace for a separate controller.
+# Verify the ingress source and any off-chart Keycloak callers before enabling.
 nginxController:
   enabled: true
   replicas: 1
