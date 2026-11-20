@@ -10,6 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "verify_element_call_dev_image.py"
+DEPLOY = ROOT / "scripts" / "deploy_element_call_dev_image.py"
 REPOSITORY = "ghcr.io/openresilienceinitiative/element-call"
 IMAGE = REPOSITORY + "@sha256:" + "a" * 64
 COMMIT = "b" * 40
@@ -36,6 +37,76 @@ class ElementCallDevImageTest(unittest.TestCase):
             "GH_TEST_STATUS": "0",
             "GH_TEST_RESPONSE": self.verification_output(REPOSITORY, "a" * 64),
         }
+
+    def prepare_deployment(self, image=IMAGE, commit=COMMIT):
+        directory = self.gh.parent
+        request = directory / "approved-build.json"
+        request.write_text(json.dumps({"image": image, "source_commit": commit}))
+        self.kubeconfig = directory / "kubeconfig"
+        self.kubeconfig.touch()
+        self.deploy_calls = directory / "kubectl-arguments"
+        kubectl = directory / "kubectl"
+        kubectl.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$KUBECTL_TEST_ARGUMENTS\"\n"
+            "case \" $* \" in *' get '*) printf '%s' \"$KUBECTL_TEST_IMAGE\" ;; esac\n"
+        )
+        kubectl.chmod(0o700)
+        self.env.update({
+            "KUBECTL_TEST_ARGUMENTS": str(self.deploy_calls),
+            "KUBECTL_TEST_IMAGE": IMAGE,
+        })
+        return [
+            sys.executable, str(DEPLOY), "--approved-build", str(request),
+            "--kubeconfig", str(self.kubeconfig), "--context", "dev-context",
+        ]
+
+    def run_deployment(self, command):
+        return subprocess.run(
+            command, env=self.env, capture_output=True, text=True, check=False,
+        )
+
+    def test_guarded_deploy_passes_the_verified_pin_and_explicit_target(self):
+        result = self.run_deployment(self.prepare_deployment())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = f"--kubeconfig {self.kubeconfig} --context dev-context --namespace caritas"
+        self.assertEqual(
+            self.deploy_calls.read_text().splitlines(),
+            [
+                f"{target} set image deployment/element-call element-call={IMAGE}",
+                f"{target} rollout status deployment/element-call --timeout=300s",
+                f'{target} get deployment/element-call -o '
+                'jsonpath={.spec.template.spec.containers[?(@.name=="element-call")].image}',
+            ],
+        )
+        self.assertEqual(result.stdout, IMAGE + "\n")
+
+    def test_verify_only_leaves_kubernetes_untouched(self):
+        result = self.run_deployment([*self.prepare_deployment(), "--verify-only"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, IMAGE + "\n")
+        self.assertFalse(self.deploy_calls.exists())
+
+    def test_attestation_failure_stops_before_any_kubernetes_command(self):
+        command = self.prepare_deployment()
+        self.env["GH_TEST_STATUS"] = "1"
+        result = self.run_deployment(command)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("provenance verification failed", result.stderr)
+        self.assertFalse(self.deploy_calls.exists())
+
+    def test_mutable_image_stops_before_any_kubernetes_command(self):
+        result = self.run_deployment(self.prepare_deployment(image=REPOSITORY + ":dev"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("immutable image", result.stderr)
+        self.assertFalse(self.deploy_calls.exists())
+
+    def test_guarded_deploy_fails_if_the_rollout_uses_a_different_pin(self):
+        command = self.prepare_deployment()
+        self.env["KUBECTL_TEST_IMAGE"] = REPOSITORY + "@sha256:" + "c" * 64
+        result = self.run_deployment(command)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match the verified pin", result.stderr)
 
     @staticmethod
     def verification_output(name, digest):
