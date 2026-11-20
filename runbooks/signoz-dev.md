@@ -233,6 +233,118 @@ retrying. The keep annotation also leaves the live Ingress in place when a
 later render omits the alias. Retire the alias through a separately reviewed
 removal of the Ingress and its public DNS record.
 
+### External HTTPS, TLS expiry and liveness
+
+Run the credential-free probe at least hourly on a runner outside the Dev
+cluster and its hosting provider.
+
+```sh
+python3 scripts/signoz_external_uptime.py
+```
+
+The probe verifies TLS trust and hostname on each connection. It requires the
+public alias to redirect to `https://dev.oriso.org/signoz/` and checks that
+page directly. It also requires HTTP 200 and JSON status `ok` at
+`/signoz/api/v1/health?live=1`. The pinned SigNoz handler checks its
+ClickHouse connection on that path. Stored telemetry and authenticated use
+have their own acceptance checks.
+
+Use the runner's system trust store or pass it with `--ca-file`. The JSON
+output includes UTC certificate expiry for both hosts. The exit codes follow
+the monitoring plugin convention.
+
+| Exit | Result | Meaning |
+| --- | --- | --- |
+| 0 | OK | Both public routes and liveness pass, and both certificates have at least 21 days left. |
+| 1 | WARNING | A certificate has fewer than 21 days left (S7 P2). |
+| 2 | CRITICAL | A public check failed or a certificate has fewer than seven days left (S7 P1 for expiry). |
+| 3 | UNKNOWN | The probe could not initialize its configured trust store. |
+
+Configure the external runner to deliver incidents and recovery to the
+approved operations destination. The SigNoz heartbeat uses a separate
+receiver and tracks whether the collector continues to supply samples.
+
+#### Schedule the check on Linux
+
+The systemd service runs once a minute with a transient account and a
+45-second deadline. It uses the host trust store and allows outbound DNS
+and HTTPS. The service needs Python 3.10 or newer and systemd 246 or newer.
+[Unit files](systemd/)
+
+On the approved runner, install `scripts/signoz_external_uptime.py` as
+`/opt/oriso/signoz-uptime/signoz_external_uptime.py`. Make the path and file
+readable by the service and writable only by the operator. Install
+`oriso-signoz-uptime.service` and `oriso-signoz-uptime.timer` from
+`runbooks/systemd` in `/etc/systemd/system`, then run these commands.
+
+```sh
+systemd-analyze verify /etc/systemd/system/oriso-signoz-uptime.service \
+  /etc/systemd/system/oriso-signoz-uptime.timer
+systemctl daemon-reload
+systemctl enable --now oriso-signoz-uptime.timer
+systemctl show oriso-signoz-uptime.service \
+  -p Result -p ExecMainCode -p ExecMainStatus -p ExecMainExitTimestamp
+journalctl -u oriso-signoz-uptime.service -n 10 --no-pager
+```
+
+Use the timed result of a completed invocation for incident and recovery
+delivery. Monitor missed executions from outside the runner so a stopped
+timer or host is also detected.
+
+#### Read completed checks for the incident consumer
+
+Run the read-only journal reader from an account with access to the local
+system journal. It reads the two check units above and in the
+[heartbeat receiver runbook](signoz-heartbeat-receiver.md). It uses
+systemd's structured manager events, verified on systemd 255. Keep the
+provided oneshot definitions and their default successful exit status.
+
+```sh
+python3 scripts/signoz_check_journal.py --since '10 minutes ago'
+python3 scripts/signoz_check_journal.py --cursor "$last_accepted_cursor"
+```
+
+Each page contains up to 24 completed starts in journal order. It includes
+normal probe exit statuses, failed starts and timeouts. Missing completion
+details map to `UNKNOWN`. Use machine, boot, unit and invocation ID to
+deduplicate retries. Use the completion cursor as the identifier when
+systemd reports a job failure without an invocation ID. Keep the
+original probe JSON for diagnostics.
+
+Store `next_cursor` only after the destination accepts the page and keep
+fetching while `more` is true. If the start window is empty, keep it until
+the first cursor is available. A missing resume cursor exits 3 so the
+operator can investigate a journal gap. Treat missing or stale results as
+monitoring failures. A successful read with an empty page provides no
+health result.
+
+#### Watch the check runner from another host
+
+Install the same journal reader on the check runner. From the independent
+monitoring host, invoke it once per minute for each installed check over the
+approved SSH route. Use pinned host keys, a bounded SSH deadline and an
+account whose command is restricted to the expected read-only checks.
+Establish a first completed run for each timer before arming its watcher.
+
+```sh
+timeout --kill-after=2s 30s ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -o ConnectTimeout=5 sig-check-runner \
+  python3 /opt/oriso/signoz-uptime/signoz_check_journal.py --check-cadence uptime
+```
+
+Use `--check-cadence heartbeat` against the runner that hosts the heartbeat
+check timer. Alert separately for each check. Exit 0 means its timer is
+active and has an attributable completion younger than 180 seconds on this
+boot. The three-minute window allows for the one-minute schedule and probe
+runtime. The response gives the age in monotonic seconds and the last probe
+state. Use earlier completion pages for the probe's own incident and recovery.
+
+Exit 2 means the timer is inactive or the current boot has no completion
+inside the window. Exit 3 means the runner state or latest completion could
+not be verified. Treat an SSH failure, outer timeout or missing or invalid
+JSON as a separate unreachable-runner incident. Recover each incident only
+after a fresh cadence result succeeds. [systemd journal timestamps](https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html)
+
 ## Proof
 
 ClickHouse, from the Dev master (heredoc, because quoting over ssh breaks):
