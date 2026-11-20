@@ -1034,9 +1034,16 @@ class RunnerContractTest(unittest.TestCase):
 
         self.assertEqual(pod_name, "signoz-log-acceptance-12345678")
         commands = [call.args[0] for call in runner.run.call_args_list]
-        self.assertIn("create", commands[0])
-        self.assertIn("event", commands[0])
-        self.assertIn("--for=namespace/caritas", commands[0])
+        # kubectl has no "create event" subcommand; the Event must come from a manifest.
+        self.assertEqual(commands[0], ["kubectl", "-n", "caritas", "create", "-f", "-"])
+        event = json.loads(runner.run.call_args_list[0].kwargs["input_text"])
+        self.assertEqual(event["kind"], "Event")
+        self.assertEqual(event["metadata"]["name"], "signoz-acceptance-12345678")
+        self.assertEqual(event["involvedObject"]["name"], "caritas")
+        # The API rejects an Event whose involvedObject.namespace differs from its own.
+        self.assertEqual(event["involvedObject"]["namespace"], "caritas")
+        self.assertEqual(event["message"], "acceptance-12345678")
+        self.assertRegex(event["lastTimestamp"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertIn("run", commands[1])
         self.assertIn("sleep 5; printf '%s\\n' \"$1\"; sleep 10", commands[1])
         self.assertTrue(any("forbidden-marker-1234" in arg for arg in commands[1]))
