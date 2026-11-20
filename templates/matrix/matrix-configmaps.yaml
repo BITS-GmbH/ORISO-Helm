@@ -113,7 +113,7 @@ data:
     # KDG epic #282 task 2: require authenticated media.
     enable_authenticated_media: true
 
-    registration_shared_secret: {{ .Values.global.secrets.matrixRegistrationSharedSecret }}
+    registration_shared_secret_path: /secrets/synapse-registration/registration-shared-secret
     report_stats: false
     # KDG epic #282 task 2: accounts are provisioned only via Keycloak/UserService (ADR-005).
     enable_registration: false
