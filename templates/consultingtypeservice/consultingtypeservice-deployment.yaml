@@ -161,11 +161,6 @@ spec:
                 configMapKeyRef:
                   key: MULTITENANCY_ENABLED
                   name: consultingtypeservice-configmap-env
-            - name: JAVA_OPTS
-              valueFrom:
-                configMapKeyRef:
-                  key: JAVA_OPTS
-                  name: consultingtypeservice-configmap-env
             - name: APP_BASE_URL
               valueFrom:
                 configMapKeyRef:
