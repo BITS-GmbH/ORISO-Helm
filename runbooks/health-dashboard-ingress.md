@@ -10,8 +10,16 @@ renders do not establish that any environment has received this change.
 The HealthDashboard Deployment and internal Service continue to render.
 The base chart enables the external Ingress with Basic Authentication. The Dev,
 PreDev, and production overlays keep it enabled. Review the effective values
-before an upgrade. To keep the dashboard internal, explicitly set
-`healthDashboard.ingress.enabled: false` after the environment overlay.
+before an upgrade. To keep the dashboard internal, put the following in a values
+file and pass that file after the environment overlay.
+
+```yaml
+healthDashboard:
+  ingress:
+    enabled: false
+```
+
+Alternatively, pass `--set healthDashboard.ingress.enabled=false` to Helm.
 
 Every enabled ingress requires Basic Authentication. The chart enforces it
 whenever the external route is enabled. The Basic Auth realm is fixed as
@@ -96,9 +104,9 @@ not completed by rendering, linting or packaging the chart.
 
 If the protected route is unavailable, keep authentication in place while the
 operator checks the Secret name, `auth` entry and effective namespace. If access
-must be withdrawn, set `healthDashboard.ingress.enabled: false` in the approved
-environment values and apply it through the normal deployment process. Put
-this override after `values-dev.yaml` so it wins. The internal Deployment and
+must be withdrawn, use the [ingress override](#configuration-and-upgrade-impact)
+through the normal deployment process. When applying a values file on Dev, pass
+it after `values-dev.yaml`. The internal Deployment and
 Service remain available, but the public dashboard route is removed.
 
 Do not blindly roll back to an older chart revision: it may recreate the
