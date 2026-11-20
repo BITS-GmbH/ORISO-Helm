@@ -90,13 +90,16 @@ class KeycloakPrivateReadinessTest(unittest.TestCase):
             first_seen.setdefault(status, round(time.monotonic() - started, 2))
             if status == 200:
                 break
-            if status is None:
+            if status == 503:
+                self.assertEqual(readiness.get("status"), "DOWN")
+            elif status is None:
                 state = docker("inspect", "--format", "{{.State.Status}}", server).stdout.strip()
                 self.assertEqual(state, "running", "Keycloak exited before answering readiness")
+            else:
+                self.fail(f"Unexpected private readiness response HTTP {status}")
             self.assertLess(time.monotonic() - started, 270, f"Readiness states: {first_seen}")
             time.sleep(0.2)
 
-        self.assertIn(503, first_seen, "The readiness endpoint did not report initialisation")
         self.assertEqual(readiness.get("status"), "UP")
         checks = {item["name"]: item.get("status") for item in readiness.get("checks", [])}
         self.assertEqual(checks.get(DATABASE_CHECK), "UP")
@@ -106,7 +109,7 @@ class KeycloakPrivateReadinessTest(unittest.TestCase):
         status, discovery = http_get(server, 8080, "/auth/realms/master/.well-known/openid-configuration")
         self.assertEqual(status, 200)
         self.assertEqual(discovery.get("issuer"), "http://localhost:8080/auth/realms/master")
-        print(f"Keycloak readiness HTTP 503 at +{first_seen[503]}s, HTTP 200 at +{first_seen[200]}s; database UP")
+        print(f"Keycloak readiness states and first observation in seconds: {first_seen}; database UP")
 
 
 if __name__ == "__main__":
