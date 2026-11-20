@@ -1160,9 +1160,12 @@ class SignozClient:
     ) -> Any:
         if self.reader and not (
             (method == "POST" and path == "/api/v5/query_range")
-            or (method == "GET" and re.fullmatch(r"/api/v2/dashboards(?:/[0-9a-f-]{36})?", path))
+            or (method == "GET" and (
+                path in ("/api/v2/rules", "/api/v1/channels")
+                or re.fullmatch(r"/api/v2/dashboards(?:/[0-9a-f-]{36})?", path)
+            ))
         ):
-            raise RuntimeError("Only the query and dashboard reads are allowed")
+            raise RuntimeError("This route is unavailable in read-only mode")
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             urllib.parse.urljoin(self.api_url, path.lstrip("/")),
@@ -2039,7 +2042,7 @@ def main(argv: list[str] | None = None) -> int:
         cluster_name=args.cluster_name,
         channel_name=args.channel_name,
     )
-    client = SignozClient(args.api_url, args.api_key)
+    client = SignozClient(args.api_url, args.api_key, read_only=args.mode == "check")
     client.wait_ready()
 
     if args.mode == "test-rule":
