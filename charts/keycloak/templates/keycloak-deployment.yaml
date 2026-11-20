@@ -60,6 +60,9 @@ spec:
             # Keep this out of lifecycle hooks so pod restarts never re-import over live data.
             - --import-realm
           env:
+            # Keep this mitigation until all deployed Java builds fix CVE-2026-114938.
+            - name: JAVA_OPTS_APPEND
+              value: "-XX:-UseBASE64Intrinsics"
             - name: KC_DB
               valueFrom:
                 configMapKeyRef:
