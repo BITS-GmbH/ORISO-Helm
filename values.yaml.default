@@ -3,6 +3,9 @@ cert-manager:
   enabled: true
 
 global:
+  # Enable with a public HealthDashboard ingress and its role-aware image.
+  healthDashboardOperatorAccess: false
+
   # Kubernetes service DNS suffix, supplied by the cluster operator.
   clusterDomain: "cluster.local"
   # Enable only after the lifecycle endpoint and candidate report are verified.
