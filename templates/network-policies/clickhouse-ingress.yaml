@@ -50,4 +50,15 @@ spec:
         - protocol: TCP
           port: http
         {{- end }}
+    {{- if and (dig "orisoDataProtection" "enabled" false .Values.signoz) (dig "orisoDataProtection" "signalBackup" "enabled" false .Values.signoz) }}
+    # The native signal backup CronJob (templates/signoz/signoz-data-protection.yaml).
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: signoz-signal-backup
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports:
+        - protocol: TCP
+          port: http
+    {{- end }}
 {{- end }}

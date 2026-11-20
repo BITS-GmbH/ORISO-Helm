@@ -147,6 +147,7 @@ def main() -> None:
         ("v1", (
             ("configmaps", "ConfigMap", True),
             ("persistentvolumeclaims", "PersistentVolumeClaim", True),
+            ("secrets", "Secret", True),
             ("persistentvolumes", "PersistentVolume", False),
         )),
         ("batch/v1", (("cronjobs", "CronJob", True),)),

@@ -50,12 +50,13 @@ def require_docker():
     raise unittest.SkipTest("docker not available")
 
 
-def request(base, method, path, body=None, token=None, form=False, timeout=10):
+def request(base, method, path, body=None, token=None, form=False, timeout=10, ssl_context=None):
     headers = {"Content-Type": "application/x-www-form-urlencoded" if form else "application/json"}
     if token:
         headers["Authorization"] = "Bearer " + token
     data = (urlencode(body).encode() if form else json.dumps(body).encode()) if body is not None else None
-    with urlopen(Request(base + path, data=data, headers=headers, method=method), timeout=timeout) as response:
+    with urlopen(Request(base + path, data=data, headers=headers, method=method),
+                 timeout=timeout, context=ssl_context) as response:
         raw = response.read()
         return json.loads(raw) if raw else None
 
@@ -74,39 +75,48 @@ def claims(token):
     return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
 
 
-def master_admin(base):
+def master_admin(base, ssl_context=None):
     return request(base, "POST", "/realms/master/protocol/openid-connect/token",
                    {"grant_type": "password", "client_id": "admin-cli",
-                    "username": INSTALLER[0], "password": INSTALLER[1]}, form=True)["access_token"]
+                    "username": INSTALLER[0], "password": INSTALLER[1]}, form=True, ssl_context=ssl_context)["access_token"]
 
 
 class KeycloakContainer:
     """One throwaway Keycloak; `base` set to reuse an already running one instead."""
 
-    def __init__(self, prefix, base=None):
+    def __init__(self, prefix, base=None, tls_dir=None, ssl_context=None):
         self.name = None
         self.prefix = prefix
         self.base = base
+        self.tls_dir = tls_dir
+        self.ssl_context = ssl_context
 
     def start(self):
         if not self.base:
             require_docker()
             self.name = self.prefix + "-" + uuid.uuid4().hex[:10]
-            subprocess.run(["docker", "run", "-d", "--name", self.name, "--label", LABEL,
-                            "-p", "127.0.0.1::8080",
-                            "-e", "JAVA_OPTS_APPEND=-XX:ActiveProcessorCount=2",
-                            "-e", "KC_BOOTSTRAP_ADMIN_USERNAME=" + INSTALLER[0],
-                            "-e", "KC_BOOTSTRAP_ADMIN_PASSWORD=" + INSTALLER[1],
-                            IMAGE, "start-dev", "--http-relative-path=/auth"], check=True, capture_output=True)
+            port = 8443 if self.tls_dir else 8080
+            docker_args = ["docker", "run", "-d", "--name", self.name, "--label", LABEL,
+                           "-p", f"127.0.0.1::{port}",
+                           "-e", "JAVA_OPTS_APPEND=-XX:ActiveProcessorCount=2",
+                           "-e", "KC_BOOTSTRAP_ADMIN_USERNAME=" + INSTALLER[0],
+                           "-e", "KC_BOOTSTRAP_ADMIN_PASSWORD=" + INSTALLER[1]]
+            keycloak_args = ["start-dev", "--http-relative-path=/auth"]
+            if self.tls_dir:
+                docker_args += ["-v", f"{self.tls_dir}:/test-tls:ro"]
+                keycloak_args += ["--https-certificate-file=/test-tls/cert.pem",
+                                  "--https-certificate-key-file=/test-tls/key.pem"]
+            subprocess.run(docker_args + [IMAGE] + keycloak_args, check=True, capture_output=True)
         try:
             if self.name:
-                endpoint = subprocess.run(["docker", "port", self.name, "8080/tcp"], check=True,
+                endpoint = subprocess.run(["docker", "port", self.name, f"{port}/tcp"], check=True,
                                           capture_output=True, text=True).stdout.strip().splitlines()[0]
-                self.base = "http://" + endpoint + "/auth"
+                scheme = "https" if self.tls_dir else "http"
+                self.base = f"{scheme}://{endpoint}/auth"
             deadline = time.monotonic() + READY_SECONDS
             while True:
                 try:
-                    master_admin(self.base)
+                    master_admin(self.base, ssl_context=self.ssl_context)
                     return self
                 except (HTTPError, URLError, ConnectionError, TimeoutError, OSError):
                     if time.monotonic() > deadline:
@@ -126,13 +136,13 @@ class KeycloakContainer:
         self.name = None
 
 
-def rendered_realm():
+def rendered_realm(*extra):
     """realm.json as the chart renders it, minus ORISO-only providers and themes."""
     command = ["helm", "template", "keycloak-fixture", str(ROOT)]
     for path in ("values.yaml.default", "tests/fixtures/values-render-domain.yaml",
                  "secrets.yaml.default", "tests/fixtures/render-required-secrets.yaml"):
         command.extend(["-f", str(ROOT / path)])
-    out = subprocess.run(command, check=True, capture_output=True, text=True).stdout
+    out = subprocess.run(command + list(extra), check=True, capture_output=True, text=True).stdout
     config = next(doc for doc in yaml.safe_load_all(out)
                   if doc and doc["kind"] == "ConfigMap" and doc["metadata"]["name"] == "keycloak-configmap-data")
     realm = json.loads(config["data"]["realm.json"])
