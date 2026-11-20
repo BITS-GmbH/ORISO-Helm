@@ -7,6 +7,31 @@ SQLite procedure. The current Dev ClickHouse catalog has one local
 destination, archive retention, recovery objectives and a restore environment.
 [SQLite recovery](https://github.com/OpenResilienceInitiative/ORISO-Helm/pull/496)
 
+## Scheduled Dev archives
+
+On Dev, `signoz.orisoDataProtection.signalBackup` runs a CronJob daily at
+03:15 UTC. It writes a native archive of the six databases to the
+`oriso_signal_backup` disk. That disk is the separate claim
+`signoz-clickhouse-signal-backup`, which ClickHouse mounts at
+`/var/lib/clickhouse-signal-backup/`. Helm keeps the claim on uninstall and
+the retain hook switches its volume to reclaim `Retain` on the next upgrade
+after it binds. Each archive `signal-<UTC stamp>.zip` passes a CRC read-back
+before its `.sha256` file is written. The newest seven verified archives are
+kept. Unverified leftovers of failed runs are removed. The Job's termination
+message records the backup ID, archive, digest and size.
+
+```sh
+kubectl -n caritas get jobs -l app.kubernetes.io/component=signoz-signal-backup
+kubectl -n caritas get pod -l app.kubernetes.io/component=signoz-signal-backup \
+  -o jsonpath='{.items[-1:].status.containerStatuses[0].state.terminated.message}'
+```
+
+The claim shares ClickHouse's node and storage class. It protects against a
+deleted or recreated data claim, not against the loss of the node's storage.
+Restore into a fresh target as described below. Use
+`Disk('oriso_signal_backup', '<archive>')` after mounting a copy of the claim
+read-only as that disk and checking the `.sha256` file.
+
 ## Isolated rehearsal
 
 Run the rehearsal on ARM64 macOS with Python 3.11 or later, PyYAML and the two
