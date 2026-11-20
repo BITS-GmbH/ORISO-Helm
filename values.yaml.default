@@ -793,6 +793,20 @@ signoz:
   clickhouse:
     persistence:
       size: 20Gi
+  # SigNoz MCP server at /signoz-mcp (templates/signoz/signoz-mcp-server.yaml, #304).
+  # It never holds a SigNoz API key: each request must carry the caller's own
+  # key in the SIGNOZ-API-KEY (or Authorization) header, which SigNoz checks;
+  # without one the server answers 401.
+  orisoMcpServer:
+    enabled: false
+    image: "docker.io/signoz/signoz-mcp-server:v0.20.0@sha256:b739763a41a0e50741c886fceb9bf2acae45b8adba22d313e1960b35cd5880af"
+    resources:
+      requests:
+        cpu: 25m
+        memory: 128Mi
+      limits:
+        # Upstream asks for at least 512Mi in containers.
+        memory: 512Mi
   # Data protection (templates/signoz/signoz-data-protection.yaml): volumes
   # switched to reclaim Retain after every upgrade, daily signoz.db backup.
   orisoDataProtection:
