@@ -464,6 +464,8 @@ livekit:
     certRevision: ""
 
 # RabbitMQ
+# networkPolicies.rabbitmqIngress.enabled defaults to false. Confirm off-chart
+# AMQP clients and management access before opting in.
 online-counseling-rabbitmq:
   imageName: "rabbitmq"
   imageVersion: "3-management"
