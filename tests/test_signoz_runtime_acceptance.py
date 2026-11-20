@@ -585,6 +585,11 @@ class JavaSignalContractTest(unittest.TestCase):
         self.assertIn("JSONEachRow", command)
         sql = command[-1]
         self.assertIn("signoz_metrics.distributed_samples_v4", sql)
+        self.assertIn(
+            "(s.env, s.temporality, s.metric_name, s.fingerprint) GLOBAL IN (\n"
+            "        SELECT env, temporality, metric_name, fingerprint FROM metric_identities",
+            sql,
+        )
         self.assertIn("(service_name, trace_id, span_id) GLOBAL IN", sql)
         self.assertIn("resources_string['deployment.environment'] = 'dev'", sql)
         return mock.Mock(stdout="\n".join(json.dumps(row) for row in self.rows))
@@ -611,6 +616,84 @@ class JavaSignalContractTest(unittest.TestCase):
         })
         self.assertEqual((report["freshnessMinutes"], report["correlationMinutes"]), (15, 60))
         self.runner.run.assert_called_once()
+
+    def set_up_signoz_api(self) -> tuple[mock.Mock, dict]:
+        self.enterContext(mock.patch.dict(MODULE.os.environ, {"SIGNOZ_API_KEY": "test-key"}))
+        opener = self.enterContext(mock.patch("urllib.request.build_opener")).return_value
+        result = {
+            "queryName": "JavaSignals", "nextCursor": "",
+            "rows": [{"data": {"wrong_environment": 0, "invalid_version": 0, **row}} for row in self.rows],
+        }
+        response = opener.open.return_value.__enter__.return_value
+        response.status = 200
+        response.read.side_effect = lambda _limit: json.dumps({
+            "status": "success", "data": {"type": "raw", "data": {"results": [result]}},
+        }).encode()
+        return opener, result
+
+    def test_java_signoz_api_reuses_the_gate_with_a_post_recovery_cutoff(self) -> None:
+        opener, _ = self.set_up_signoz_api()
+        end_ms = 1_800_000_000_000
+        since_ms = end_ms - 120_000
+        with mock.patch.object(MODULE.time, "time_ns", return_value=end_ms * 1_000_000):
+            report = self.run_gate(
+                "--check-java-signals", "--signoz-url", "https://dev.example.org/signoz/",
+                "--since-unix-ms", str(since_ms),
+            )
+        self.assertEqual(report["missing"], [])
+        self.assertEqual(report["freshnessStartUnixMs"], since_ms)
+        self.assertEqual(report["correlationStartUnixMs"], since_ms)
+        self.runner.run.assert_not_called()
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, "https://dev.example.org/signoz/api/v5/query_range")
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(request.get_header("Signoz-api-key"), "test-key")
+        payload = json.loads(request.data)
+        self.assertEqual((payload["start"], payload["end"], payload["requestType"]), (since_ms, end_ms, "raw"))
+        query, = payload["compositeQuery"]["queries"]
+        self.assertEqual(query["type"], "clickhouse_sql")
+        sql = query["spec"]["query"]
+        self.assertIn(f"timestamp >= {since_ms * 1_000_000}", sql)
+        self.assertIn(f"t.timestamp >= fromUnixTimestamp64Milli({since_ms})", sql)
+        self.assertIn(f"s.unix_milli >= {since_ms}", sql)
+        self.assertIn(f"unix_milli >= {since_ms - 3_600_000}", sql)
+
+    def test_java_signoz_api_empty_result_fails_the_same_presence_checks(self) -> None:
+        _, result = self.set_up_signoz_api()
+        result["rows"] = None
+        report = self.run_gate(
+            "--check-java-signals", "--signoz-url", "https://dev.example.org/signoz/",
+            failure="Java signal readback missing",
+        )
+        self.assertEqual(len(report["missing"]), 16)
+
+    def test_java_signoz_api_rejects_partial_or_unexpected_response_data(self) -> None:
+        opener, result = self.set_up_signoz_api()
+        flags = ["--check-java-signals", "--signoz-url", "https://dev.example.org/signoz/"]
+        for field, value in (("nextCursor", "more"), ("warnings", ["partial"]), ("queryName", "other")):
+            with self.subTest(field=field), mock.patch.dict(result, {field: value}):
+                with self.assertRaisesRegex(RuntimeError, "invalid Java signal readback"):
+                    self.run_gate(*flags)
+        result["rows"][0]["data"]["body"] = "unexpected"
+        with self.assertRaisesRegex(RuntimeError, "invalid Java signal readback"):
+            self.run_gate(*flags)
+        self.assertEqual(opener.open.call_count, 4)
+        self.runner.run.assert_not_called()
+
+    def test_java_signoz_api_rejects_invalid_cutoff_and_endpoint_before_requests(self) -> None:
+        opener, _ = self.set_up_signoz_api()
+        with mock.patch.object(MODULE.time, "time_ns", return_value=1_800_000_000_000_000_000):
+            for cutoff in ("-1", "1800000000000"):
+                with self.subTest(cutoff=cutoff), self.assertRaisesRegex(RuntimeError, "--since-unix-ms"):
+                    self.run_gate(
+                        "--check-java-signals", "--signoz-url", "https://dev.example.org/signoz/",
+                        "--since-unix-ms", cutoff,
+                    )
+        for url in ("http://dev.example.org/signoz/", "https://user@dev.example.org/signoz/"):
+            with self.subTest(url=url), self.assertRaisesRegex(RuntimeError, "trusted HTTPS"):
+                self.run_gate("--check-java-signals", "--signoz-url", url)
+        opener.open.assert_not_called()
+        self.runner.run.assert_not_called()
 
     def test_java_signal_diagnosis_fails_with_the_exact_missing_pair(self) -> None:
         self.rows = [row for row in self.rows if (
@@ -951,9 +1034,16 @@ class RunnerContractTest(unittest.TestCase):
 
         self.assertEqual(pod_name, "signoz-log-acceptance-12345678")
         commands = [call.args[0] for call in runner.run.call_args_list]
-        self.assertIn("create", commands[0])
-        self.assertIn("event", commands[0])
-        self.assertIn("--for=namespace/caritas", commands[0])
+        # kubectl has no "create event" subcommand; the Event must come from a manifest.
+        self.assertEqual(commands[0], ["kubectl", "-n", "caritas", "create", "-f", "-"])
+        event = json.loads(runner.run.call_args_list[0].kwargs["input_text"])
+        self.assertEqual(event["kind"], "Event")
+        self.assertEqual(event["metadata"]["name"], "signoz-acceptance-12345678")
+        self.assertEqual(event["involvedObject"]["name"], "caritas")
+        # The API rejects an Event whose involvedObject.namespace differs from its own.
+        self.assertEqual(event["involvedObject"]["namespace"], "caritas")
+        self.assertEqual(event["message"], "acceptance-12345678")
+        self.assertRegex(event["lastTimestamp"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertIn("run", commands[1])
         self.assertIn("sleep 5; printf '%s\\n' \"$1\"; sleep 10", commands[1])
         self.assertTrue(any("forbidden-marker-1234" in arg for arg in commands[1]))

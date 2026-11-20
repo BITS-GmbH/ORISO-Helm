@@ -41,6 +41,8 @@ global:
     # Optional cluster-owned ingress-nginx controller to scrape. Environment
     # overlays must opt in because this chart does not install the controller.
     externalIngressNginxNamespace: ""
+    # Optional namespace of the cluster-owned cert-manager controller.
+    externalCertManagerNamespace: ""
     dbMetrics: false
     tracingSamplingProbability: ""
     testRunBaggage: false
@@ -242,8 +244,10 @@ matrix:
     engine: "sqlite3"
   # In-cluster Service name of the PostgreSQL StatefulSet (Service metadata.name and serviceName).
   postgresServiceName: "matrix-postgres-service"
-  # Host Synapse and the PITR backup job connect to. Empty = postgresServiceName.
+  # Host used by Synapse and the PITR backup script. Empty = postgresServiceName.
   postgresHost: ""
+  # Enable networkPolicies.matrixPostgresIngress.enabled only after checking external callers.
+  # The chart defaults the policy to false. See runbooks/matrix-sqlite-to-postgres.md.
   synapseServerName: "your-server.local"
   synapseReportStats: "no"
   synapseEnableAuthenticatedMedia: "false"
@@ -333,11 +337,23 @@ admin:
   imageVersion: "dev"
 # MongoDB
 online-counseling-mongodb:
+  # Size container requests and limits in the environment overlay.
+  resources: {}
   imageName: "mongo"
   imageVersion: "5.0"
 
+networkPolicies:
+  mongodbIngress:
+    # Verify out-of-chart consumers for the installation before enabling.
+    enabled: false
+  mariadbIngress:
+    # Verify out-of-chart consumers for the installation before enabling.
+    enabled: false
+
 # MariaDB
 online-counseling-mariadb:
+  # Size container requests and limits in the environment overlay.
+  resources: {}
   imageName: "mariadb"
   imageVersion: "11.0.6"
   maxconnections: "1000"
@@ -452,6 +468,8 @@ livekit:
     certRevision: ""
 
 # RabbitMQ
+# networkPolicies.rabbitmqIngress.enabled defaults to false. Confirm off-chart
+# AMQP clients and management access before opting in.
 online-counseling-rabbitmq:
   imageName: "rabbitmq"
   imageVersion: "3-management"
@@ -588,6 +606,8 @@ addonService:
 
 # User service
 userService:
+  # Size container requests and limits in the environment overlay.
+  resources: {}
   accountInactivity:
     enabled: false
     dryRun: true
@@ -700,14 +720,19 @@ frontend:
   replicas: 1
   image: "ghcr.io/openresilienceinitiative/oriso-frontend:dev"
 
+# networkPolicies.keycloakIngress.enabled defaults to false. Specify
+# networkPolicies.keycloakIngress.externalNginxNamespace for a separate controller.
+# Verify the ingress source and any off-chart Keycloak callers before enabling.
 nginxController:
   enabled: true
-  replicas: 1
+  # Two replicas, spread over nodes, with a PodDisruptionBudget (ORISO-Helm#544).
+  replicas: 2
 
 # IP anonymization proxy — replaces X-Real-IP/X-Forwarded-For with a
 # session-scoped UUID so no ORISO backend ever sees a real client IP.
 ipAnonymizer:
   enabled: false
+  # Must stay 1 until sessions are shared between pods; the render fails above 1 (ORISO-Helm#544).
   replicas: 1
   image: "ghcr.io/openresilienceinitiative/ip-anonymizer:latest"
 
@@ -722,6 +747,13 @@ signoz:
   orisoObservability:
     enabled: false
     conformanceCheck: false
+    # Optional Dev platform rules in the managed catalog.
+    platformAlerts:
+      enabled: false
+    # Optional Dev heartbeat. Its pre-created webhook is separate from Slack.
+    heartbeat:
+      enabled: false
+      channelName: oriso-dev-heartbeat
     deploymentIdentity:
       enabled: false
       # Approved deployment pin and runtime digest set for each Java workload.
@@ -752,6 +784,9 @@ signoz:
       signoz_global_external__url: "https://your-domain.example.com/signoz"
   telemetryStoreMigrator:
     upgradeHelmHooks: false
+  # networkPolicies.clickhouseIngress.enabled defaults to false. It applies to
+  # embedded ClickHouse in the release namespace. Inventory separately managed
+  # backup clients and metrics scrapers before enabling it.
   clickhouse:
     persistence:
       size: 20Gi
@@ -828,8 +863,12 @@ dbMonitoring:
 # Health Dashboard
 healthDashboard:
   ingress:
-    # Public at /health by default; every enabled ingress requires Basic Auth.
+    # Served at /health. With basicAuth: true (default) the whole path needs Basic Auth.
+    # basicAuth: false makes it public without login; the image's public mode
+    # (ORISO_PUBLIC_MODE, on by default since 2.0.17) then withholds the Helm image
+    # inventory, service URLs and raw health bodies (#57). authSecret is ignored then.
     enabled: true
+    basicAuth: true
     # Secret with an nginx `auth` htpasswd entry; set ingress.htpasswd in secrets.yaml to render it.
     authSecret: "health-dashboard-basic-auth"
   image:

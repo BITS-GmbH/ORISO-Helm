@@ -21,14 +21,15 @@ healthDashboard:
 
 Alternatively, pass `--set healthDashboard.ingress.enabled=false` to Helm.
 
-Every enabled ingress requires Basic Authentication. The chart enforces it
-whenever the external route is enabled. The Basic Auth realm is fixed as
-`HealthDashboard Authentication`. Configuration contains only an existing Secret name:
+Basic Authentication is enabled by default for the external route. Keep it
+enabled for a restricted dashboard. The realm is fixed as
+`HealthDashboard Authentication`. The values reference the Secret by name:
 
 ```yaml
 healthDashboard:
   ingress:
     enabled: true
+    basicAuth: true
     authSecret: health-dashboard-basic-auth
 ```
 
@@ -57,6 +58,19 @@ referenced Secret exists. Verify the `auth` entry and the ingress controller
 before rollout. A malformed or wrong-namespace Secret can make the route
 unavailable.
 
+## Public status view
+
+The public status view remains available without login as required by
+[HealthDashboard #57](https://github.com/OpenResilienceInitiative/ORISO-HealthDashboard/issues/57).
+Before selecting that mode, verify that the installed image includes the
+public-mode changes and that `ORISO_PUBLIC_MODE` is enabled. Set
+`healthDashboard.ingress.basicAuth` to `false` as a boolean in the environment
+overlay. The chart rejects this setting when public mode is disabled.
+The public view omits the Helm image inventory, internal service URLs and
+raw health responses. Operator-only routes stay unavailable while role-based
+access is tracked in
+[HealthDashboard #58](https://github.com/OpenResilienceInitiative/ORISO-HealthDashboard/issues/58).
+
 ## Local verification
 
 These checks use synthetic fixture values and do not contact a cluster:
@@ -81,12 +95,15 @@ Check the rendered HealthDashboard Ingress for `auth-type: basic`, the expected
 Secret/realm, host, TLS, `/health(/|$)(.*)`, `/$2` rewrite and Service backend.
 The automated render tests cover the authenticated default, explicit disablement,
 invalid names, namespace and port overrides, and Dev, PreDev, and production
-overlays. Record local and deployed verification separately in the PR.
+overlays. They also verify that the public ingress requires public mode.
+Record local and deployed verification separately in the PR.
 
 ## Verification after authorized Dev rollout
 
-The operator must record the Helm revision/chart and deployed HealthDashboard
-image separately, then verify the real ingress boundary:
+Record the Helm chart revision and deployed HealthDashboard image separately.
+Use the authorized chart deployment path for ingress changes. Updating the Dev
+image alone leaves the installed Ingress unchanged. For a restricted dashboard,
+verify the real ingress boundary:
 
 - [ ] Unauthenticated requests to `/health`, `/health/`, and the dashboard's
   actual data endpoints are denied with a Basic Auth challenge (`401`, allowing
@@ -97,8 +114,10 @@ image separately, then verify the real ingress boundary:
 - [ ] The internal Service still reaches HealthDashboard successfully.
 - [ ] An authenticated browser loads and refreshes the dashboard successfully.
 
-These runtime checks require an authorized rollout and credentials. They are
-not completed by rendering, linting or packaging the chart.
+For the approved public status view, confirm that a signed-out browser loads
+status information and that the deployed image withholds operator information.
+Verify the public and restricted views through their respective acceptance
+checks after rollout. Chart rendering and lint cover configuration only.
 
 ## Safe rollback
 
@@ -112,5 +131,5 @@ Service remain available, but the public dashboard route is removed.
 Do not blindly roll back to an older chart revision: it may recreate the
 unauthenticated public route. Any rollback to such a revision must first have a
 reviewed external access block, and the operator must verify the live boundary
-afterwards. Never recover availability by removing the auth annotations or
-creating an unauthenticated replacement ingress.
+afterwards. For a restricted dashboard, recover availability with the required
+authentication in place or withdraw the public route.
