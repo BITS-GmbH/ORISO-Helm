@@ -8,13 +8,13 @@ renders do not establish that any environment has received this change.
 ## Configuration and upgrade impact
 
 The HealthDashboard Deployment and internal Service continue to render.
-Its external Ingress is disabled by default. A later upgrade using the new base
-values removes the chart-managed `/health` route unless the environment
-explicitly enables it. Existing customized values should be reviewed before
-upgrading. PreDev and production overlays do not opt in.
+The base chart enables the external Ingress with Basic Authentication. The Dev,
+PreDev, and production overlays keep it enabled. Review the effective values
+before an upgrade. To keep the dashboard internal, explicitly set
+`healthDashboard.ingress.enabled: false` after the environment overlay.
 
-Every enabled ingress requires Basic Authentication; there is no separate switch
-to disable authentication. The Basic Auth realm is fixed as
+Every enabled ingress requires Basic Authentication. The chart enforces it
+whenever the external route is enabled. The Basic Auth realm is fixed as
 `HealthDashboard Authentication`. Configuration contains only an existing Secret name:
 
 ```yaml
@@ -42,9 +42,12 @@ rotate Storybook/Redis credentials as part of this change.
 The Secret must be in the **effective ingress namespace**:
 `healthDashboard.namespace` when nonempty, otherwise the Helm release namespace.
 The Ingress, Service and Deployment use that same namespace. Supply a local
-Secret name, never a `namespace/name` reference. Helm rendering does not check
-Secret existence, contents or ingress-controller configuration. A missing,
-malformed or wrong-namespace Secret can make the route unavailable.
+Secret name, never a `namespace/name` reference. Offline rendering validates the
+name. When Helm can look up an existing namespace during an upgrade and the
+chart does not render an htpasswd Secret, the template also checks that the
+referenced Secret exists. Verify the `auth` entry and the ingress controller
+before rollout. A malformed or wrong-namespace Secret can make the route
+unavailable.
 
 ## Local verification
 
@@ -54,12 +57,13 @@ These checks use synthetic fixture values and do not contact a cluster:
 python3 tests/render_health_dashboard_ingress_auth_test.py
 python3 tests/render_storybook_dev_test.py
 python3 tests/render_environment_overlays_test.py
-helm lint . -f values.yaml.default -f secrets.yaml.default -f values-dev.yaml \
+helm lint . -f values.yaml.default -f tests/fixtures/values-render-domain.yaml \
+  -f secrets.yaml.default -f tests/fixtures/render-required-secrets.yaml -f values-dev.yaml \
   --set-string userService.smtpUser=smtp-validation-user \
   --set-string userService.smtpPassword=smtp-validation-password
 helm template health-auth-test . --namespace render-test \
-  -f values.yaml.default -f secrets.yaml.default -f values-dev.yaml \
-  --set-string global.domainName=health.oriso.internal \
+  -f values.yaml.default -f tests/fixtures/values-render-domain.yaml \
+  -f secrets.yaml.default -f tests/fixtures/render-required-secrets.yaml -f values-dev.yaml \
   --set-string userService.smtpUser=smtp-validation-user \
   --set-string userService.smtpPassword=smtp-validation-password \
   > /tmp/health-auth-rendered.yaml
@@ -67,10 +71,9 @@ helm template health-auth-test . --namespace render-test \
 
 Check the rendered HealthDashboard Ingress for `auth-type: basic`, the expected
 Secret/realm, host, TLS, `/health(/|$)(.*)`, `/$2` rewrite and Service backend.
-The automated render tests also cover disabled/default behavior, invalid names,
-namespace/port overrides, and Dev/PreDev/production overlays. Overlay names here
-identify local inputs, not tested running environments. This change adds no PR
-validation workflow; local results must be attached separately to the PR.
+The automated render tests cover the authenticated default, explicit disablement,
+invalid names, namespace and port overrides, and Dev, PreDev, and production
+overlays. Record local and deployed verification separately in the PR.
 
 ## Verification after authorized Dev rollout
 
