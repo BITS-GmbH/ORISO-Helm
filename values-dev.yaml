@@ -8,6 +8,11 @@
 # only. Matrix room encryption rollout is configured separately per environment;
 # this generic dev overlay does not opt in. See docs/infrastructure-report-2026-07.md §7.
 
+# Gate sign-in traffic on Keycloak's private application readiness check.
+online-counseling-keycloak:
+  keycloakProbes:
+    useManagementPort: true
+
 global:
   # Telemetry to the bundled SigNoz (https://dev.oriso.org/signoz). Every trace
   # is kept on Dev; the cluster collector also scrapes nginx, Keycloak, Synapse
