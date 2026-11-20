@@ -244,8 +244,10 @@ matrix:
     engine: "sqlite3"
   # In-cluster Service name of the PostgreSQL StatefulSet (Service metadata.name and serviceName).
   postgresServiceName: "matrix-postgres-service"
-  # Host Synapse and the PITR backup job connect to. Empty = postgresServiceName.
+  # Host used by Synapse and the PITR backup script. Empty = postgresServiceName.
   postgresHost: ""
+  # Enable networkPolicies.matrixPostgresIngress.enabled only after checking external callers.
+  # The chart defaults the policy to false. See runbooks/matrix-sqlite-to-postgres.md.
   synapseServerName: "your-server.local"
   synapseReportStats: "no"
   synapseEnableAuthenticatedMedia: "false"
