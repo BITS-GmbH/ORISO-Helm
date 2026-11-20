@@ -752,6 +752,9 @@ signoz:
       signoz_global_external__url: "https://your-domain.example.com/signoz"
   telemetryStoreMigrator:
     upgradeHelmHooks: false
+  # networkPolicies.clickhouseIngress.enabled defaults to false. It applies to
+  # embedded ClickHouse in the release namespace. Inventory separately managed
+  # backup clients and metrics scrapers before enabling it.
   clickhouse:
     persistence:
       size: 20Gi
