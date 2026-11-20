@@ -481,10 +481,11 @@ def _check_runtime_readiness(
 
 
 def _current_clickhouse_statefulsets(
-    runner: Runner, namespace: str, release: str,
+    runner: Runner, namespace: str, release: str, *, chi: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     chi_name = f"{release}-clickhouse"
-    chi = json.loads(_kubectl(runner, namespace, "get", "chi", chi_name, "-o", "json"))
+    if chi is None:
+        chi = json.loads(_kubectl(runner, namespace, "get", "chi", chi_name, "-o", "json"))
     installation = chi.get("metadata", {})
     if installation.get("deletionTimestamp"):
         raise RuntimeError(f"ClickHouseInstallation {chi_name} is deleting")

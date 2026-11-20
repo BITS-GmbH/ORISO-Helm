@@ -96,6 +96,8 @@ files, image pin overrides and post-renderer for both the preview and upgrade.
 Dev's application images can be updated independently of Helm. The image check
 compares the current direct Helm-managed Deployments, StatefulSets, DaemonSets
 and CronJobs with the proposed manifest, including their init containers.
+The ClickHouse storage check compares the rendered data claim template with
+the running installation and every data claim mounted by its owned Pods.
 
 The first rollout restarts Keycloak, Synapse (`Recreate`, a short Matrix gap),
 Redis, the four Java services, Frontend and Admin. Announce it before starting
@@ -144,7 +146,9 @@ preflight_signoz() (
   printf '%s' "$preview" | jq -e '.config' |
     python3 scripts/observability_overlay.py "$expected_observability" --check-effective || exit 1
   printf '%s' "$preview" | jq -er '.manifest' |
-    python3 scripts/check_helm_workload_images.py --namespace caritas --release caritas "$@"
+    python3 scripts/check_helm_workload_images.py --namespace caritas --release caritas "$@" || exit 1
+  printf '%s' "$preview" | jq -er '.manifest' |
+    python3 -m scripts.check_signoz_clickhouse_storage --namespace caritas --release caritas
 )
 preflight_signoz
 ```
@@ -467,6 +471,36 @@ kubectl -n caritas exec "$POD" -c clickhouse -- clickhouse-client --query "DROP 
 ```
 
 ## ClickHouse internal log retention
+
+For an approved expansion, put the agreed `signoz.clickhouse.persistence.size`
+in the reviewed Dev overlay input. Generate `observability_file` from that
+input and use it as `expected_observability` in the rollout preflight. This
+keeps the size change within the approved observability paths checked by
+`values_drift`. The preflight compares the rendered ClickHouseInstallation
+with the request and reported capacity of each existing claim. A provider may
+report more capacity than requested. Confirm the desired size with the
+operator if the planned request falls below the reported capacity.
+
+Confirm the StorageClass supports expansion and record the current PVC and
+filesystem capacity before a size change. Record the PVC UID, bound PV name
+and reclaim policy, and the StatefulSet and Pod UIDs. The preflight also
+compares the size against the live StatefulSet's data claim template. Growing
+that template requires the StatefulSet to retain data claims both when it
+scales down and when it is deleted. Kubernetes defaults either unset field
+to `Retain`.
+
+Plan the expansion for an approved maintenance window. Altinity 0.21.2 falls
+back to recreating the StatefulSet when the Kubernetes update fails on an
+immutable claim template. It scales the old StatefulSet to zero first.
+This interrupts the single-replica Dev ClickHouse installation.
+[Operator update and recreation](https://github.com/Altinity/clickhouse-operator/blob/0.21.2/pkg/controller/chi/worker.go#L1463-L1491)
+· [StatefulSet claim retention](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#persistentvolumeclaim-retention)
+
+After the operator and CSI reconcile, require the same PVC UID and PV binding,
+the approved size in both the claim request and reported capacity, and a Ready
+ClickHouse Pod on the retained claim. Check the mounted filesystem and
+ClickHouse's unreserved writable space before running the SigNoz signal
+acceptance checks. Server dry-run admission is a preflight checkpoint.
 
 The Dev overlay sets a three-day deletion TTL for new `query_log`, `part_log`,
 `trace_log`, `asynchronous_metric_log`, `metric_log`, `zookeeper_log`,
@@ -802,16 +836,25 @@ A Helm rollback reapplies the saved manifest. Check the approved target
 revision on the Dev master before using it.
 
 ```bash
-set -o pipefail
 helm history caritas -n caritas
-helm get manifest caritas -n caritas --revision "${revision:?Set the approved target revision}" |
-  python3 scripts/check_helm_workload_images.py --namespace caritas --release caritas
+verify_signoz_rollback() (
+  set +x
+  set -euo pipefail
+  manifest=$(helm get manifest caritas -n caritas --revision "${revision:?Set the approved target revision}")
+  printf '%s' "$manifest" |
+    python3 scripts/check_helm_workload_images.py --namespace caritas --release caritas
+  printf '%s' "$manifest" |
+    python3 -m scripts.check_signoz_clickhouse_storage --namespace caritas --release caritas
+)
+verify_signoz_rollback
 ```
 
-An image mismatch requires the forward upgrade with the current pins. Apply
-the same check to the target of any automatic rollback before enabling it.
-Review the rollback's resource removals and hook Jobs separately, and require
-it to retain the SigNoz, ClickHouse, ZooKeeper and backup claims.
+An image or storage mismatch requires the forward upgrade with the current
+image pins and capacity settings. Apply both checks to the target of any
+automatic rollback before enabling it. Leave automatic rollback off for an
+expansion if the saved revision requests less than the planned new capacity.
+Review the rollback's resource removals and hook Jobs separately, and
+require it to retain the SigNoz, ClickHouse, ZooKeeper and backup claims.
 
 ## E2E trace ingest (Dev nightly)
 
