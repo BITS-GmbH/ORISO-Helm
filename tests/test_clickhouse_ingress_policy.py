@@ -69,6 +69,9 @@ class ClickHouseIngressPolicyTest(unittest.TestCase):
 
         clickhouse = selector(target["metadata"]["labels"])
         self.assertEqual(spec["podSelector"], clickhouse)
+        backup = next(doc for (kind, _), doc in chart.items()
+                      if kind == "CronJob" and "signal-backup" in doc["metadata"]["name"])
+        backup_labels = backup["spec"]["jobTemplate"]["spec"]["template"]["metadata"]["labels"]
         self.assertEqual(spec["ingress"], [
             {"from": [
                 peer("StatefulSet", "signoz"),
@@ -77,6 +80,7 @@ class ClickHouseIngressPolicyTest(unittest.TestCase):
             ], "ports": tcp("client")},
             {"from": [peer("Deployment", "operator")], "ports": tcp("http")},
             {"from": [{"podSelector": clickhouse}], "ports": tcp("client", "interserver")},
+            {"from": [{"podSelector": {"matchLabels": backup_labels}}], "ports": tcp("http")},
         ])
 
     def test_hook_and_clickhouse_init_keep_their_peers(self):
