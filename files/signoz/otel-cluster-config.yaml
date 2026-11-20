@@ -58,6 +58,8 @@ processors:
     - env
     override: false
     timeout: 2s
+{{- $podScrape := eq (include "oriso.podScrape.enabled" .) "true" }}
+{{- $ingressNs := get (get (.Values.global | default dict) "observability" | default dict) "externalIngressNginxNamespace" | default "" }}
 receivers:
   k8s_cluster:
     allocatable_types_to_report:
@@ -94,7 +96,7 @@ receivers:
     auth_type: serviceAccount
     namespaces:
     - ${env:K8S_NAMESPACE}
-{{- if eq (include "oriso.podScrape.enabled" .) "true" }}
+{{- if $podScrape }}
   # Pod metrics (global.observability.appMetrics or dbMetrics): scrapes only pods in
   # the release namespace that carry oriso.io/scrape="true", on the port and
   # path from their oriso.io/* annotations. `$$` escapes the collector's own
@@ -131,8 +133,7 @@ receivers:
         - source_labels: [__meta_kubernetes_pod_name]
           target_label: k8s_pod_name
 {{- end }}
-{{- $ingressNs := get (get (.Values.global | default dict) "observability" | default dict) "externalIngressNginxNamespace" | default "" }}
-{{- if and $ingressNs (eq (include "oriso.appMetrics.enabled" .) "true") }}
+{{- if $ingressNs }}
   # Cluster-wide ingress-nginx that is not installed by this chart (Dev): scraped by
   # pod IP on the controller's metrics port, only in the named namespace.
   prometheus/oriso-ingress-nginx:
@@ -245,7 +246,7 @@ service:
       - batch
       receivers:
       - k8s_cluster
-{{- if eq (include "oriso.podScrape.enabled" .) "true" }}
+{{- if or $podScrape $ingressNs }}
     metrics/apps:
       exporters:
       - otlphttp
@@ -254,8 +255,10 @@ service:
       - resourcedetection
       - batch
       receivers:
+{{- if $podScrape }}
       - prometheus/oriso-apps
-{{- if and $ingressNs (eq (include "oriso.appMetrics.enabled" .) "true") }}
+{{- end }}
+{{- if $ingressNs }}
       - prometheus/oriso-ingress-nginx
 {{- end }}
 {{- if and $certificateNs (eq (include "oriso.appMetrics.enabled" .) "true") }}

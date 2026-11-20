@@ -589,6 +589,25 @@ def _emit_signal(
     )
 
 
+def build_acceptance_event(namespace: str, acceptance_id: str) -> dict[str, Any]:
+    """Core v1 Event whose message carries only the random acceptance ID."""
+    # k8s_events skips events older than its start time, so stamp the current time.
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return {
+        "apiVersion": "v1",
+        "kind": "Event",
+        "metadata": {"name": f"signoz-acceptance-{acceptance_id[-8:]}", "namespace": namespace},
+        "involvedObject": {"apiVersion": "v1", "kind": "Namespace", "name": namespace, "namespace": namespace},
+        "reason": "SigNozAcceptance",
+        "type": "Normal",
+        "message": acceptance_id,
+        "source": {"component": "oriso-signoz-acceptance"},
+        "firstTimestamp": now,
+        "lastTimestamp": now,
+        "count": 1,
+    }
+
+
 def _emit_infra_probes(
     runner: Runner,
     namespace: str,
@@ -599,17 +618,10 @@ def _emit_infra_probes(
 ) -> str:
     """Create one Kubernetes event and one representative application log."""
     suffix = acceptance_id[-8:]
-    event_name = f"signoz-acceptance-{suffix}"
-    _kubectl(
-        runner,
-        namespace,
-        "create",
-        "event",
-        event_name,
-        "--reason=SigNozAcceptance",
-        "--type=Normal",
-        f"--message={acceptance_id}",
-        f"--for=namespace/{namespace}",
+    # kubectl has no "create event" subcommand, so submit a core Event manifest.
+    runner.run(
+        ["kubectl", "-n", namespace, "create", "-f", "-"],
+        input_text=json.dumps(build_acceptance_event(namespace, acceptance_id)),
     )
 
     pod_name = f"signoz-log-acceptance-{suffix}"
