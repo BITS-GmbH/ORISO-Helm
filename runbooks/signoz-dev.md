@@ -96,6 +96,8 @@ files, image pin overrides and post-renderer for both the preview and upgrade.
 Dev's application images can be updated independently of Helm. The image check
 compares the current direct Helm-managed Deployments, StatefulSets, DaemonSets
 and CronJobs with the proposed manifest, including their init containers.
+The ClickHouse storage check compares the rendered data claim template with
+the running installation and every data claim mounted by its owned Pods.
 
 The first rollout restarts Keycloak, Synapse (`Recreate`, a short Matrix gap),
 Redis, the four Java services, Frontend and Admin. Announce it before starting
@@ -144,7 +146,9 @@ preflight_signoz() (
   printf '%s' "$preview" | jq -e '.config' |
     python3 scripts/observability_overlay.py "$expected_observability" --check-effective || exit 1
   printf '%s' "$preview" | jq -er '.manifest' |
-    python3 scripts/check_helm_workload_images.py --namespace caritas --release caritas "$@"
+    python3 scripts/check_helm_workload_images.py --namespace caritas --release caritas "$@" || exit 1
+  printf '%s' "$preview" | jq -er '.manifest' |
+    python3 -m scripts.check_signoz_clickhouse_storage --namespace caritas --release caritas
 )
 preflight_signoz
 ```
@@ -232,6 +236,118 @@ after the patch, preserve the existing Ingress and verify both responses before
 retrying. The keep annotation also leaves the live Ingress in place when a
 later render omits the alias. Retire the alias through a separately reviewed
 removal of the Ingress and its public DNS record.
+
+### External HTTPS, TLS expiry and liveness
+
+Run the credential-free probe at least hourly on a runner outside the Dev
+cluster and its hosting provider.
+
+```sh
+python3 scripts/signoz_external_uptime.py
+```
+
+The probe verifies TLS trust and hostname on each connection. It requires the
+public alias to redirect to `https://dev.oriso.org/signoz/` and checks that
+page directly. It also requires HTTP 200 and JSON status `ok` at
+`/signoz/api/v1/health?live=1`. The pinned SigNoz handler checks its
+ClickHouse connection on that path. Stored telemetry and authenticated use
+have their own acceptance checks.
+
+Use the runner's system trust store or pass it with `--ca-file`. The JSON
+output includes UTC certificate expiry for both hosts. The exit codes follow
+the monitoring plugin convention.
+
+| Exit | Result | Meaning |
+| --- | --- | --- |
+| 0 | OK | Both public routes and liveness pass, and both certificates have at least 21 days left. |
+| 1 | WARNING | A certificate has fewer than 21 days left (S7 P2). |
+| 2 | CRITICAL | A public check failed or a certificate has fewer than seven days left (S7 P1 for expiry). |
+| 3 | UNKNOWN | The probe could not initialize its configured trust store. |
+
+Configure the external runner to deliver incidents and recovery to the
+approved operations destination. The SigNoz heartbeat uses a separate
+receiver and tracks whether the collector continues to supply samples.
+
+#### Schedule the check on Linux
+
+The systemd service runs once a minute with a transient account and a
+45-second deadline. It uses the host trust store and allows outbound DNS
+and HTTPS. The service needs Python 3.10 or newer and systemd 246 or newer.
+[Unit files](systemd/)
+
+On the approved runner, install `scripts/signoz_external_uptime.py` as
+`/opt/oriso/signoz-uptime/signoz_external_uptime.py`. Make the path and file
+readable by the service and writable only by the operator. Install
+`oriso-signoz-uptime.service` and `oriso-signoz-uptime.timer` from
+`runbooks/systemd` in `/etc/systemd/system`, then run these commands.
+
+```sh
+systemd-analyze verify /etc/systemd/system/oriso-signoz-uptime.service \
+  /etc/systemd/system/oriso-signoz-uptime.timer
+systemctl daemon-reload
+systemctl enable --now oriso-signoz-uptime.timer
+systemctl show oriso-signoz-uptime.service \
+  -p Result -p ExecMainCode -p ExecMainStatus -p ExecMainExitTimestamp
+journalctl -u oriso-signoz-uptime.service -n 10 --no-pager
+```
+
+Use the timed result of a completed invocation for incident and recovery
+delivery. Monitor missed executions from outside the runner so a stopped
+timer or host is also detected.
+
+#### Read completed checks for the incident consumer
+
+Run the read-only journal reader from an account with access to the local
+system journal. It reads the two check units above and in the
+[heartbeat receiver runbook](signoz-heartbeat-receiver.md). It uses
+systemd's structured manager events, verified on systemd 255. Keep the
+provided oneshot definitions and their default successful exit status.
+
+```sh
+python3 scripts/signoz_check_journal.py --since '10 minutes ago'
+python3 scripts/signoz_check_journal.py --cursor "$last_accepted_cursor"
+```
+
+Each page contains up to 24 completed starts in journal order. It includes
+normal probe exit statuses, failed starts and timeouts. Missing completion
+details map to `UNKNOWN`. Use machine, boot, unit and invocation ID to
+deduplicate retries. Use the completion cursor as the identifier when
+systemd reports a job failure without an invocation ID. Keep the
+original probe JSON for diagnostics.
+
+Store `next_cursor` only after the destination accepts the page and keep
+fetching while `more` is true. If the start window is empty, keep it until
+the first cursor is available. A missing resume cursor exits 3 so the
+operator can investigate a journal gap. Treat missing or stale results as
+monitoring failures. A successful read with an empty page provides no
+health result.
+
+#### Watch the check runner from another host
+
+Install the same journal reader on the check runner. From the independent
+monitoring host, invoke it once per minute for each installed check over the
+approved SSH route. Use pinned host keys, a bounded SSH deadline and an
+account whose command is restricted to the expected read-only checks.
+Establish a first completed run for each timer before arming its watcher.
+
+```sh
+timeout --kill-after=2s 30s ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -o ConnectTimeout=5 sig-check-runner \
+  python3 /opt/oriso/signoz-uptime/signoz_check_journal.py --check-cadence uptime
+```
+
+Use `--check-cadence heartbeat` against the runner that hosts the heartbeat
+check timer. Alert separately for each check. Exit 0 means its timer is
+active and has an attributable completion younger than 180 seconds on this
+boot. The three-minute window allows for the one-minute schedule and probe
+runtime. The response gives the age in monotonic seconds and the last probe
+state. Use earlier completion pages for the probe's own incident and recovery.
+
+Exit 2 means the timer is inactive or the current boot has no completion
+inside the window. Exit 3 means the runner state or latest completion could
+not be verified. Treat an SSH failure, outer timeout or missing or invalid
+JSON as a separate unreachable-runner incident. Recover each incident only
+after a fresh cadence result succeeds. [systemd journal timestamps](https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html)
 
 ## Proof
 
@@ -419,6 +535,36 @@ kubectl -n caritas exec "$POD" -c clickhouse -- clickhouse-client --query "DROP 
 ```
 
 ## ClickHouse internal log retention
+
+For an approved expansion, put the agreed `signoz.clickhouse.persistence.size`
+in the reviewed Dev overlay input. Generate `observability_file` from that
+input and use it as `expected_observability` in the rollout preflight. This
+keeps the size change within the approved observability paths checked by
+`values_drift`. The preflight compares the rendered ClickHouseInstallation
+with the request and reported capacity of each existing claim. A provider may
+report more capacity than requested. Confirm the desired size with the
+operator if the planned request falls below the reported capacity.
+
+Confirm the StorageClass supports expansion and record the current PVC and
+filesystem capacity before a size change. Record the PVC UID, bound PV name
+and reclaim policy, and the StatefulSet and Pod UIDs. The preflight also
+compares the size against the live StatefulSet's data claim template. Growing
+that template requires the StatefulSet to retain data claims both when it
+scales down and when it is deleted. Kubernetes defaults either unset field
+to `Retain`.
+
+Plan the expansion for an approved maintenance window. Altinity 0.21.2 falls
+back to recreating the StatefulSet when the Kubernetes update fails on an
+immutable claim template. It scales the old StatefulSet to zero first.
+This interrupts the single-replica Dev ClickHouse installation.
+[Operator update and recreation](https://github.com/Altinity/clickhouse-operator/blob/0.21.2/pkg/controller/chi/worker.go#L1463-L1491)
+· [StatefulSet claim retention](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#persistentvolumeclaim-retention)
+
+After the operator and CSI reconcile, require the same PVC UID and PV binding,
+the approved size in both the claim request and reported capacity, and a Ready
+ClickHouse Pod on the retained claim. Check the mounted filesystem and
+ClickHouse's unreserved writable space before running the SigNoz signal
+acceptance checks. Server dry-run admission is a preflight checkpoint.
 
 The Dev overlay sets a three-day deletion TTL for new `query_log`, `part_log`,
 `trace_log`, `asynchronous_metric_log`, `metric_log`, `zookeeper_log`,
@@ -754,16 +900,25 @@ A Helm rollback reapplies the saved manifest. Check the approved target
 revision on the Dev master before using it.
 
 ```bash
-set -o pipefail
 helm history caritas -n caritas
-helm get manifest caritas -n caritas --revision "${revision:?Set the approved target revision}" |
-  python3 scripts/check_helm_workload_images.py --namespace caritas --release caritas
+verify_signoz_rollback() (
+  set +x
+  set -euo pipefail
+  manifest=$(helm get manifest caritas -n caritas --revision "${revision:?Set the approved target revision}")
+  printf '%s' "$manifest" |
+    python3 scripts/check_helm_workload_images.py --namespace caritas --release caritas
+  printf '%s' "$manifest" |
+    python3 -m scripts.check_signoz_clickhouse_storage --namespace caritas --release caritas
+)
+verify_signoz_rollback
 ```
 
-An image mismatch requires the forward upgrade with the current pins. Apply
-the same check to the target of any automatic rollback before enabling it.
-Review the rollback's resource removals and hook Jobs separately, and require
-it to retain the SigNoz, ClickHouse, ZooKeeper and backup claims.
+An image or storage mismatch requires the forward upgrade with the current
+image pins and capacity settings. Apply both checks to the target of any
+automatic rollback before enabling it. Leave automatic rollback off for an
+expansion if the saved revision requests less than the planned new capacity.
+Review the rollback's resource removals and hook Jobs separately, and
+require it to retain the SigNoz, ClickHouse, ZooKeeper and backup claims.
 
 ## E2E trace ingest (Dev nightly)
 
