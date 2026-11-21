@@ -29,6 +29,8 @@ Existing realms have their own UUIDs; never use fresh export IDs there.
 4. Deploy the Java companions and this chart with the same independent secrets and actual IDs. Exercise invitations, settings, user management and mail. Secret, client ID or subject changes replace the affected backend Pods automatically.
 5. Only after that verification, set retirement true for an explicitly reviewed upgrade. This disables the two old password users and revokes their sessions. Keep the master-realm recovery identity separate.
 
+Starting with Keycloak 26.8.2, stock Admin REST calls require the built-in `kc-admin-api` scope. After the upgraded realm is ready, run normal service-identity reconciliation and verify UserService user management and SMTP settings. A standalone image rollout does not run the Helm hook, so include the reviewed reconciliation job and those checks in that rollout. Keep the Admin REST audience check enabled.
+
 **For operators — bounded preparation using rendered review files:**
 ```bash
 # Render the candidate with the reviewed deployment values; keep this output private.
@@ -69,10 +71,12 @@ kubectl --namespace "$NAMESPACE" logs job/keycloak-prepare-backend-clients
 **For developers — permission and release contract:**
 ```text
 Technical: realm role technical; no realm-management roles.
-Admin: realm role otp-config-admin; manage-users, view-users, query-users, view-realm.
+Admin: realm role otp-config-admin; manage-users, view-users, query-users, view-realm, query-clients.
 Existing view-users composite also yields query-groups; no realm-admin/impersonation grant.
 Clients: confidential, serviceAccountsEnabled, fullScopeAllowed false,
-no direct password grant, no browser/implicit flows, only the standard roles scope.
+no direct password grant and no browser/implicit flows. Keep the standard roles scope.
+On runtimes with the built-in kc-admin-api scope, grant it by default only to the
+configured backend admin and SMTP sync clients. The technical client keeps roles only.
 Job prepareOnly default false; retireLegacyUsers default false.
 Normal mode rejects missing clients, wrong UUIDs, public/human-flow clients,
 and invalid final grants before legacy retirement.
