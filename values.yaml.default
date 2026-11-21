@@ -208,6 +208,16 @@ global:
 
 matrix:
   image: "matrixdotorg/synapse:v1.158.0"
+  # Synapse container resources. Synapse is a single Python process; CFS
+  # throttling at the limit delays every client request, including the
+  # MatrixRTC token check behind /livekit/jwt/sfu/get. Raise per environment.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
   # Synapse rc_login. All browser logins reach Synapse through UserService, so
   # the address limit applies to the whole platform. failed_attempts is not set
   # on purpose: it keeps Synapse's default and limits wrong passwords.
