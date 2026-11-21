@@ -1,6 +1,6 @@
 # Nightly encrypted MongoDB and Synapse PostgreSQL backup on the Dev master
 
-This adds the two datastores that had no backup job. [`backup_datastores.py`](../scripts/backup_datastores.py) dumps one pod, streams the dump through gzip and `age`, and publishes the run folder by a single rename. A failed run leaves no folder behind. It follows the rules of the [MariaDB writer](mariadb-host-backup.md) and reuses its encryption code. The copy to the Storage Box is a separate step: [off-site backup](offsite-backup.md).
+This adds the two datastores that had no backup job. [`backup_datastores.py`](../scripts/backup_datastores.py) dumps one pod, streams the dump through gzip and `age`, and publishes the run folder by a single rename. A failed run leaves no folder behind. It follows the rules of the [MariaDB writer](mariadb-host-backup.md) and reuses its encryption code. Copying to the Storage Box, retention and the monthly restore test follow in a separate change (#533, #282).
 
 | Datastore | Pod | Local folder | File in each run |
 | --- | --- | --- | --- |
@@ -53,11 +53,12 @@ The scripts stay in `/opt/oriso/datastore-backup/` with `backup_mariadb.py` besi
 
 ## Restore
 
-Restore needs an age identity, so it never runs on the master. See [off-site backup](offsite-backup.md#monthly-restore-test) for the scripted rehearsal. By hand, on a machine that holds an identity:
+Restore needs an age identity, so it never runs on the master. By hand, on a machine that holds an identity, in bash with `pipefail` so a wrong key or a damaged archive fails the whole pipeline instead of restoring nothing and reporting success:
 
 ```bash
-age --decrypt -i ~/oriso-backup-identity.txt mongodb.archive.gz.age | gunzip | mongorestore --archive --drop --uri "$SCRATCH_MONGO_URI"
-age --decrypt -i ~/oriso-backup-identity.txt synapse.sql.gz.age | gunzip | psql "$SCRATCH_POSTGRES_URI"
+set -o pipefail
+age --decrypt -i ~/oriso-backup-identity.txt mongodb.archive.gz.age | gunzip | mongorestore --archive --drop --uri "$SCRATCH_MONGO_URI" || echo "MongoDB restore FAILED"
+age --decrypt -i ~/oriso-backup-identity.txt synapse.sql.gz.age | gunzip | psql -X --set ON_ERROR_STOP=on "$SCRATCH_POSTGRES_URI" || echo "PostgreSQL restore FAILED"
 ```
 
 Restore into a scratch instance with no mail, webhook or application access, never over Dev.

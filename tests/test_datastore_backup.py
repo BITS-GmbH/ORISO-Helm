@@ -72,7 +72,9 @@ class DatastoreBackupTest(unittest.TestCase):
     def test_pods_match_the_rendered_dev_statefulsets(self):
         rendered = by_key(render("values-dev.yaml"))
         script = SCRIPT.read_text()
-        for pod in re.findall(r'"pod": "pod/([^"]+)"', script):
+        pods = re.findall(r'"pod": "pod/([^"]+)"', script)
+        self.assertEqual(sorted(pods), ["matrix-postgres-0", "mongodb-0"])
+        for pod in pods:
             self.assertIn(("StatefulSet", pod.rsplit("-", 1)[0]), rendered)
 
     def test_each_datastore_publishes_one_encrypted_run(self):
@@ -130,9 +132,6 @@ class DatastoreBackupTest(unittest.TestCase):
         self.assertEqual(actions, ["wait", "get"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class DatastoreBackupUnitsTest(unittest.TestCase):
     def test_units_check_the_target_then_back_up_into_a_private_folder(self):
@@ -155,3 +154,6 @@ class DatastoreBackupUnitsTest(unittest.TestCase):
             timer.read(ROOT / "runbooks" / "systemd" / f"oriso-{datastore}-backup.timer")
             self.assertRegex(timer["Timer"]["OnCalendar"], r"^\*-\*-\* 02:\d\d:00 UTC$")
             self.assertEqual(timer["Timer"]["Persistent"], "true")
+
+if __name__ == "__main__":
+    unittest.main()

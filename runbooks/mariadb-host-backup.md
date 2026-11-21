@@ -115,5 +115,5 @@ ExecStart=/usr/bin/python3 -I /opt/oriso/mariadb-backup/backup_mariadb.py /etc/r
 
 ## Not covered here
 
-- Off-site copy, 30 daily and 12 weekly retention and the monthly restore test: [off-site backup](offsite-backup.md) (#533, #282).
+- Off-site copy, 30 daily and 12 weekly retention and the monthly restore test (#533, #282): a separate change.
 - MongoDB and Matrix PostgreSQL: [datastore host backup](datastore-host-backup.md).
