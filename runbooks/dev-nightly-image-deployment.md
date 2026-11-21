@@ -30,6 +30,30 @@ Run the following from the reviewed checkout on the Dev master during the approv
 )
 ```
 
-Run `/usr/local/sbin/oriso-dev-deploy-all --dry-run` after releasing the lock. The output should list UserService before TenantService. Keep the previous launcher until the nightly log confirms UserService succeeded before TenantService started. Verify the synthetic directory lookup after the successful rollout. If the operator rolls back the launcher, restore the saved copy with the same lock and atomic rename.
+Run `/usr/local/sbin/oriso-dev-deploy-all --dry-run` after releasing the lock. The output should list UserService before TenantService. Keep the previous launcher until the nightly log confirms UserService succeeded before TenantService started. Verify the synthetic directory lookup after the successful rollout.
+
+## Roll back the launcher
+
+Use the same reviewed checkout. Set `PREVIOUS_LAUNCHER` to the saved file from the first installation. This check refuses to replace an installed launcher that has changed since the review.
+
+```bash
+(
+  set -euo pipefail
+  : "${PREVIOUS_LAUNCHER:?Set the saved launcher path}"
+  installed=/usr/local/sbin/oriso-dev-deploy-all
+  exec 9>/var/lock/oriso-dev-image-deploy.lock
+  flock -n 9
+  if ! cmp -s scripts/oriso-dev-deploy-all "$installed"; then
+    printf 'The installed launcher differs from the reviewed checkout.\n' >&2
+    exit 1
+  fi
+
+  staged=$(mktemp /usr/local/sbin/.oriso-dev-deploy-all.XXXXXX)
+  trap 'rm -f "$staged"' EXIT
+  install -m 0755 "$PREVIOUS_LAUNCHER" "$staged"
+  bash -n "$staged"
+  mv -T "$staged" "$installed"
+)
+```
 
 The offline review fixtures use local synthetic subprocesses. Run them with `python3 -m unittest discover -s tests -p 'test_dev_nightly_deploy.py'`.

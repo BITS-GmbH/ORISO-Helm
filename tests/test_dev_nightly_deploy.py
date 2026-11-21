@@ -38,6 +38,8 @@ BEHAVIOR = {
     "userservice": USER_SERVICE,
     "tenantservice": """
 grep -q '^userservice complete$' "$EVENTS" || exit 5
+sleep 0.05
+printf '%s\\n' 'tenantservice complete' >> "$EVENTS"
 [[ "$SCENARIO" != tenant_failure ]] || exit 6
 """,
     "element-call": '[[ "$SCENARIO" != unrelated_failure ]] || exit 7',
@@ -116,7 +118,7 @@ exec "$@"
                 self.assertEqual("tenantservice start" in recorded, starts_tenant, output)
                 if starts_tenant:
                     self.assertLess(recorded.index("userservice complete"), recorded.index("tenantservice start"))
-                    self.assertLess(recorded.index("tenantservice start"), recorded.index("admin start"))
+                    self.assertLess(recorded.index("tenantservice complete"), recorded.index("admin start"))
                 if scenario == "dry_run":
                     self.assertEqual(recorded, [])
                     self.assertLess(output.index("DRY RUN userservice"), output.index("DRY RUN tenantservice"))
