@@ -52,7 +52,9 @@ fi
   || { cat "${WORK}/apply.log"; echo "FAIL wrong rows deleted"; exit 1; }
 backup="$(ls "${WORK}"/access_tokens-expired-puppet-*.csv.gz)"
 [[ "$(gunzip -c "${backup}" | wc -l | tr -d ' ')" == 4 ]] || { echo "FAIL backup rows"; exit 1; }
-[[ "$(stat -f %Lp "${backup}" 2>/dev/null || stat -c %a "${backup}")" == 600 ]] || { echo "FAIL backup mode"; exit 1; }
+# GNU stat first; BSD stat (macOS) only if that fails, keeping only one attempt's output.
+mode="$(stat -c %a "${backup}" 2>/dev/null)" || mode="$(stat -f %Lp "${backup}")"
+[[ "${mode}" == 600 ]] || { echo "FAIL backup mode: ${mode}"; exit 1; }
 
 # Restore from the backup brings the rows back.
 gunzip -c "${backup}" | docker exec -i "${PG}" psql -X -v ON_ERROR_STOP=1 -q -U synapse -d synapse \
