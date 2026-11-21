@@ -100,9 +100,9 @@ run_wave() {
   printf 'Wave %s: %s\n' "$name" "${services[*]}"
   if "$dry_run"; then
     for service in "${services[@]}"; do
-      run_wave_member "$service"
+      run_wave_member "$service" || failed=1
     done
-    return 0
+    return "$failed"
   fi
 
   for service in "${services[@]}"; do

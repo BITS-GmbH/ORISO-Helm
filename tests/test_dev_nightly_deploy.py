@@ -63,6 +63,8 @@ class DevNightlyDeployTest(unittest.TestCase):
             "tenant_failure": (1, True),
             "unrelated_failure": (1, True),
             "dry_run": (0, False),
+            "dry_run_provider_missing": (1, False),
+            "dry_run_surface_not_executable": (1, False),
         }
         for scenario, (exit_status, starts_tenant) in scenarios.items():
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as tmp:
@@ -87,10 +89,12 @@ class DevNightlyDeployTest(unittest.TestCase):
                 runner = folder / RUNNER.name
                 runner.write_text(source)
                 for service in SERVICES:
-                    if scenario == "provider_missing" and service == "userservice":
+                    if scenario in {"provider_missing", "dry_run_provider_missing"} and service == "userservice":
                         continue
                     event = f"""printf '%s\\n' '{service} start' >> "$EVENTS"\n"""
                     executable(scripts / f"deploy-{service}-dev.sh", event + BEHAVIOR.get(service, "exit 0"))
+                if scenario == "dry_run_surface_not_executable":
+                    (scripts / "deploy-admin-dev.sh").chmod(0o600)
                 executable(folder / "flock", "exit 0")
                 executable(folder / "timeout", """
 shift
@@ -98,7 +102,7 @@ if [[ "$SCENARIO" == provider_timeout && "$1" == */deploy-userservice-dev.sh ]];
 exec "$@"
 """)
                 args = ["bash", str(runner)]
-                if scenario == "dry_run":
+                if scenario.startswith("dry_run"):
                     args.append("--dry-run")
                 result = subprocess.run(
                     args,
@@ -119,9 +123,19 @@ exec "$@"
                 if starts_tenant:
                     self.assertLess(recorded.index("userservice complete"), recorded.index("tenantservice start"))
                     self.assertLess(recorded.index("tenantservice complete"), recorded.index("admin start"))
-                if scenario == "dry_run":
+                if scenario.startswith("dry_run"):
                     self.assertEqual(recorded, [])
-                    self.assertLess(output.index("DRY RUN userservice"), output.index("DRY RUN tenantservice"))
+                    self.assertIn("DRY RUN frontend", output)
+                    if scenario == "dry_run_provider_missing":
+                        self.assertRegex(output, r"FAILED\s+userservice\s+missing executable")
+                        self.assertNotIn("DRY RUN tenantservice", output)
+                    elif scenario == "dry_run_surface_not_executable":
+                        self.assertRegex(output, r"FAILED\s+admin\s+missing executable")
+                    else:
+                        self.assertLess(output.index("DRY RUN userservice"), output.index("DRY RUN tenantservice"))
+                    if exit_status:
+                        self.assertIn("finished with failures", output)
+                        self.assertNotIn("finished successfully", output)
                 else:
                     self.assertIn("agencyservice complete", recorded)
                     self.assertIn("admin start", recorded)
