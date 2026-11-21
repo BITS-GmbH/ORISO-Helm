@@ -230,6 +230,22 @@ userService:
 matrix:
   synapseServerName: "matrix.oriso.org"
   matrixServerName: "matrix.oriso.org"
+  # Synapse rc_invites for Dev (ORISO-UserService#1736). A new enquiry in
+  # Springfield QA Dev invites ~17 counsellors into its holding room at once;
+  # with the shipped burst of 10 the rest waits, and the standing supervisor's
+  # invite after an accept was refused for ~270 s (per_user: one invite per
+  # ~5.5 min once 5 are used). Room/issuer bursts cover two backfills plus
+  # supervisors; per_user allows one invite every 10 s with a burst of 20.
+  rateLimits:
+    invitesPerRoom:
+      perSecond: 1
+      burstCount: 40
+    invitesPerIssuer:
+      perSecond: 1
+      burstCount: 40
+    invitesPerUser:
+      perSecond: 0.1
+      burstCount: 20
 matrixrtcAuth:
   membershipReaderUserId: "@matrixrtc-auth:matrix.oriso.org"
 

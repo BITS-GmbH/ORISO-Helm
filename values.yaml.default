@@ -218,6 +218,18 @@ matrix:
     loginAccount:
       perSecond: 0.1
       burstCount: 20
+    # Synapse rc_invites, shipped defaults (ORISO-UserService#1736). Raise them
+    # per environment: a new enquiry invites every counsellor of the agency into
+    # its holding room. invitesPerUser limits invites RECEIVED by one user.
+    invitesPerRoom:
+      perSecond: 0.3
+      burstCount: 10
+    invitesPerUser:
+      perSecond: 0.003
+      burstCount: 5
+    invitesPerIssuer:
+      perSecond: 0.3
+      burstCount: 10
   # Per-IP limit at the ingress for logins from outside the cluster. Browsers do
   # not log in here; they get their Matrix token from UserService.
   loginRateLimit:
