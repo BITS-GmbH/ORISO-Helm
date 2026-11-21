@@ -1,0 +1,68 @@
+# Nightly encrypted MongoDB and Synapse PostgreSQL backup on the Dev master
+
+This adds the two datastores that had no backup job. [`backup_datastores.py`](../scripts/backup_datastores.py) dumps one pod, streams the dump through gzip and `age`, and publishes the run folder by a single rename. A failed run leaves no folder behind. It follows the rules of the [MariaDB writer](mariadb-host-backup.md) and reuses its encryption code. The copy to the Storage Box is a separate step: [off-site backup](offsite-backup.md).
+
+| Datastore | Pod | Local folder | File in each run |
+| --- | --- | --- | --- |
+| MongoDB 5.0 | `pod/mongodb-0` | `/root/db-backups/mongodb-helm` | `mongodb.archive.gz.age` (`mongodump --archive`) |
+| Synapse PostgreSQL 15 | `pod/matrix-postgres-0` | `/root/db-backups/matrix-postgres-helm` | `synapse.sql.gz.age` (`pg_dump`, plain SQL) |
+
+The backup refuses to run without a recipients file, so a plain-text dump can never be written.
+
+## Who can decrypt
+
+The host holds only **public** age recipients. Create two identities, one per key holder, each on that person's own machine:
+
+```bash
+age-keygen -o ~/oriso-backup-identity.txt   # keep the file in your password manager, never on a server
+age-keygen -y ~/oriso-backup-identity.txt   # prints the public recipient to hand over
+```
+
+Put both public recipients, one per line, into `/etc/oriso/backup.age-recipients` on the master (mode 0600). Every archive is then readable by either holder alone, and losing one identity does not lose the backups. Use the same file for the MariaDB drop-in. Never store an identity on the master, in Git, in Slack or in the cluster.
+
+## Install on Dev
+
+This is an operator change on the master. Do it only with explicit approval for that task, from a checkout of the reviewed `dev` commit, as root.
+
+```bash
+set -euo pipefail
+command -v age >/dev/null || apt-get install -y age
+install -d -m 0700 /opt/oriso/datastore-backup /root/db-backups/mongodb-helm /root/db-backups/matrix-postgres-helm /etc/oriso
+install -m 0600 scripts/backup_mariadb.py scripts/backup_datastores.py /opt/oriso/datastore-backup/
+for ds in mongodb matrix-postgres; do
+  install -m 0644 runbooks/systemd/oriso-$ds-backup.service runbooks/systemd/oriso-$ds-backup.timer /etc/systemd/system/
+done
+systemd-analyze verify /etc/systemd/system/oriso-mongodb-backup.service /etc/systemd/system/oriso-matrix-postgres-backup.service
+systemctl daemon-reload
+for ds in mongodb matrix-postgres; do
+  python3 -I /opt/oriso/datastore-backup/backup_datastores.py /etc/rancher/k3s/k3s.yaml default caritas "$ds" --check-target
+  systemctl start oriso-$ds-backup.service
+  systemctl show oriso-$ds-backup.service -p Result
+  ls -l "$(ls -1d /root/db-backups/$ds-helm/$ds-* | tail -1)"
+done
+```
+
+`Result=success` and one non-empty `.age` file per run mean the backup works. Then enable the timers:
+
+```bash
+systemctl enable --now oriso-mongodb-backup.timer oriso-matrix-postgres-backup.timer
+systemctl list-timers 'oriso-*-backup.timer' --no-pager
+```
+
+The scripts stay in `/opt/oriso/datastore-backup/` with `backup_mariadb.py` beside them, because `backup_datastores.py` loads it.
+
+## Restore
+
+Restore needs an age identity, so it never runs on the master. See [off-site backup](offsite-backup.md#monthly-restore-test) for the scripted rehearsal. By hand, on a machine that holds an identity:
+
+```bash
+age --decrypt -i ~/oriso-backup-identity.txt mongodb.archive.gz.age | gunzip | mongorestore --archive --drop --uri "$SCRATCH_MONGO_URI"
+age --decrypt -i ~/oriso-backup-identity.txt synapse.sql.gz.age | gunzip | psql "$SCRATCH_POSTGRES_URI"
+```
+
+Restore into a scratch instance with no mail, webhook or application access, never over Dev.
+
+## Notes
+
+- `mongodump` has no environment variable for its password, so the pod's own `MONGO_INITDB_ROOT_PASSWORD` is passed on the command line inside the MongoDB container. Only root in that container can see it.
+- The dump is a logical backup taken while the pod runs. MongoDB `--archive` is not a point-in-time snapshot across collections. PostgreSQL's `pg_dump` is consistent.

@@ -113,8 +113,7 @@ ExecStart=
 ExecStart=/usr/bin/python3 -I /opt/oriso/mariadb-backup/backup_mariadb.py /etc/rancher/k3s/k3s.yaml default caritas /root/db-backups/mariadb-helm --age-recipients-file /etc/oriso/mariadb-backup.age-recipients
 ```
 
-## Not covered yet
+## Not covered here
 
-- Retention. The script keeps every run. One Dev run is about 2 MB, so local disk is not a near-term risk, but pruning belongs with the retention decision in #282.
-- Off-site copy to the Storage Box (#533).
-- MongoDB and Matrix PostgreSQL. Their restore rehearsals are in #606 and #608.
+- Off-site copy, 30 daily and 12 weekly retention and the monthly restore test: [off-site backup](offsite-backup.md) (#533, #282).
+- MongoDB and Matrix PostgreSQL: [datastore host backup](datastore-host-backup.md).
