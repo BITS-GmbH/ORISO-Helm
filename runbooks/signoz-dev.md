@@ -415,8 +415,10 @@ its own approved network and identity setup.
 ## nginx metrics (ingress-nginx)
 
 The ingress controller runs in the namespace `ingress-nginx`, outside the Helm
-release. `global.observability.externalIngressNginxNamespace: ingress-nginx`
-(Dev) makes the cluster collector scrape its pod IPs on port 10254. This
+release. See [Dev ingress HTTP/2 mitigation](dev-ingress-http2.md) before
+reinstalling the controller ConfigMap.
+`global.observability.externalIngressNginxNamespace: ingress-nginx` (Dev)
+makes the cluster collector scrape its pod IPs on port 10254. This
 setting requires `signozCollector.enabled=true`. It works with general
 application metrics disabled. The chart
 cannot switch metrics on in the controller: it must run with
