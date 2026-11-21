@@ -246,6 +246,13 @@ matrix:
     invitesPerUser:
       perSecond: 0.1
       burstCount: 20
+    # rc_message (ORISO-UserService#1737): the agency service account creates a
+    # holding room and invites ~17 counsellors per enquiry; with the shipped
+    # 0.2/s burst 10 the next enquiry's room creation was refused (Dev sessions
+    # 206, 223, 226). Burst 60 at 1/s covers three back-to-back enquiries.
+    messages:
+      perSecond: 1
+      burstCount: 60
 matrixrtcAuth:
   membershipReaderUserId: "@matrixrtc-auth:matrix.oriso.org"
 

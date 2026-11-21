@@ -27,6 +27,10 @@ SYNAPSE_DEFAULTS = {
     "per_issuer": {"per_second": 0.3, "burst_count": 10},
 }
 HOLDING_ROOM_COUNSELLORS = 17
+# Synapse's shipped rc_message: also limits room creation and membership events per user
+# (ORISO-UserService#1737: the agency account's backfill invites used it up, so the next
+# enquiry's room creation was refused with a ~3 s retry).
+SYNAPSE_MESSAGE_DEFAULT = {"per_second": 0.2, "burst_count": 10}
 
 
 def render_documents(*extra: str) -> list[dict]:
@@ -97,6 +101,19 @@ def main() -> int:
         if actual != expected:
             failures.append(f"{name}: expected rc_invites {expected}, got {actual}")
 
+    message_cases = {
+        "default rc_message": ([], SYNAPSE_MESSAGE_DEFAULT),
+        "rc_message without rateLimits": (["--set", "matrix.rateLimits=null"], SYNAPSE_MESSAGE_DEFAULT),
+        "rc_message override": (
+            ["--set", "matrix.rateLimits.messages.burstCount=60"],
+            {"per_second": 0.2, "burst_count": 60},
+        ),
+    }
+    for name, (extra, expected) in message_cases.items():
+        actual = render_homeserver(*extra).get("rc_message")
+        if actual != expected:
+            failures.append(f"{name}: expected rc_message {expected}, got {actual}")
+
     # rc_login must be untouched by the new block.
     login = render_homeserver().get("rc_login")
     if login != {
@@ -117,6 +134,15 @@ def main() -> int:
         failures.append(f"Dev invitesPerIssuer.burstCount {per_issuer} < {2 * HOLDING_ROOM_COUNSELLORS}")
     if per_user_rate < 1 / 60:
         failures.append(f"Dev invitesPerUser.perSecond {per_user_rate} allows less than one invite a minute")
+
+    messages = dev.get("messages") or {}
+    if messages.get("burstCount", 0) < 3 * HOLDING_ROOM_COUNSELLORS:
+        failures.append(
+            f"Dev messages.burstCount {messages.get('burstCount', 0)} < {3 * HOLDING_ROOM_COUNSELLORS}"
+            " (agency account: room creation + backfill invites of consecutive enquiries)"
+        )
+    if messages.get("perSecond", 0) < 1:
+        failures.append(f"Dev messages.perSecond {messages.get('perSecond', 0)} < 1")
 
     if failures:
         print("\n".join(failures), file=sys.stderr)

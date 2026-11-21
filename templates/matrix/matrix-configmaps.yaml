@@ -175,6 +175,15 @@ data:
         per_second: {{ dig "invitesPerIssuer" "perSecond" 0.3 $rateLimits }}
         burst_count: {{ dig "invitesPerIssuer" "burstCount" 10 $rateLimits }}
 
+    # rc_message (ORISO-UserService#1737). Besides messages it limits each user's
+    # room creation and membership events. The agency service account invites a
+    # department into every new enquiry's holding room and then creates the next
+    # enquiry's room, so the shipped 0.2/s burst 10 refused that creation with a
+    # ~3 s retry on Dev. Defaults are Synapse's shipped values.
+    rc_message:
+      per_second: {{ dig "messages" "perSecond" 0.2 $rateLimits }}
+      burst_count: {{ dig "messages" "burstCount" 10 $rateLimits }}
+
     # Enable Sliding Sync (Matrix 2.0) for INSTANT real-time synchronization
     # MSC4140 delayed events let Element Call schedule a crash-safe leave event.
     max_event_delay_duration: 24h
