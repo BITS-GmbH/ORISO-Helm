@@ -7,9 +7,34 @@ SQLite procedure. The current Dev ClickHouse catalog has one local
 destination, archive retention, recovery objectives and a restore environment.
 [SQLite recovery](https://github.com/OpenResilienceInitiative/ORISO-Helm/pull/496)
 
-## Scheduled Dev archives
+## Activate the scheduled archives
 
-On Dev, `signoz.orisoDataProtection.signalBackup` runs a CronJob daily at
+A routine Dev upgrade leaves the ClickHouse signal backup inactive. For a
+separately approved rollout, verify that the storage class can provision and
+attach a 10 GiB ReadWriteOnce volume at the ClickHouse Pod's topology. Plan for
+ClickHouse to restart when its pod template changes. Check the bound claim,
+the recovered Ready replica and SigNoz queries before accepting the rollout.
+
+In the [Dev rollout procedure](signoz-dev.md#rollout), use the same input list
+for generating and checking the intended observability projection:
+
+```sh
+observability_inputs=(values-dev.yaml values-dev-clickhouse-signal-backup.yaml)
+python3 scripts/observability_overlay.py "${observability_inputs[@]}" > "$observability_file"
+```
+
+Helm replaces volume and mount lists. Preserve unrelated existing entries in
+the reviewed values if the installation has any. For an already enabled
+installation, include the same approved overlay to keep its schedule and
+mount. For an intentional removal, use a reviewed values input that sets the
+job flag to false, removes only the signal backup volume and mount entries, and
+replaces its disk file with empty valid XML (`<clickhouse/>`). This makes each
+planned change visible to the drift check. Use explicit values rather than
+reusing the installed release values. The preflight flags inherited signal
+backup disk or mount settings on a routine upgrade. Plan the restart and verify
+the kept claim's PV reclaim policy before removing the mount.
+
+With the overlay active, `signoz.orisoDataProtection.signalBackup` runs a CronJob daily at
 03:15 UTC. It writes a native archive of the six databases to the
 `oriso_signal_backup` disk. That disk is the separate claim
 `signoz-clickhouse-signal-backup`, which ClickHouse mounts at

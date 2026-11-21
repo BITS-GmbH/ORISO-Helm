@@ -22,6 +22,7 @@ import yaml
 CHART_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA_SERVICES = ("userservice", "agencyservice", "tenantservice", "consultingtypeservice")
 DEV_ALIAS = ("Ingress", "signoz-oriso-org-redirect")
+SIGNAL_BACKUP_OVERLAY = "values-dev-clickhouse-signal-backup.yaml"
 
 
 def render(
@@ -328,12 +329,12 @@ def assert_default_off(docs: dict[tuple[str, str], dict[str, Any]]) -> None:
 
 
 def render_dev_with(
-    overlay: dict[str, Any], *helm_args: str, chart: str = CHART_DIR,
+    overlay: dict[str, Any], *helm_args: str, chart: str = CHART_DIR, extra_values: tuple[str, ...] = (),
 ) -> dict[tuple[str, str], dict[str, Any]]:
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as handle:
         yaml.safe_dump(overlay, handle)
     try:
-        return by_key(render("values-dev.yaml", handle.name, chart=chart, helm_args=helm_args))
+        return by_key(render("values-dev.yaml", *extra_values, handle.name, chart=chart, helm_args=helm_args))
     finally:
         os.unlink(handle.name)
 
@@ -435,11 +436,13 @@ def assert_review_findings() -> None:
     assert config.index("k8s.cronjob.name\"])") < config.index("k8s.job.name\"])"), "CronJob name before the generated Job name"
 
 
-def render_dev_fails(overlay: dict[str, Any], *helm_args: str, chart: str = CHART_DIR) -> str:
+def render_dev_fails(
+    overlay: dict[str, Any], *helm_args: str, chart: str = CHART_DIR, extra_values: tuple[str, ...] = (),
+) -> str:
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as handle:
         yaml.safe_dump(overlay, handle)
     try:
-        render("values-dev.yaml", handle.name, chart=chart, helm_args=helm_args)
+        render("values-dev.yaml", *extra_values, handle.name, chart=chart, helm_args=helm_args)
     except AssertionError as error:
         return str(error)
     finally:
@@ -459,13 +462,12 @@ def assert_second_review_findings() -> None:
         "caritas/signoz-db-caritas-signoz-0",
         "caritas/data-volumeclaim-template-chi-caritas-clickhouse-cluster-0-0-0",
         "caritas/data-caritas-zookeeper-0",
-        "caritas/signoz-clickhouse-signal-backup",
     ]
     docs = render_dev_with({"signoz": {"clickhouse": {
         "persistence": {"existingClaim": "own-clickhouse"},
         "zookeeper": {"persistence": {"existingClaim": "own-zookeeper"}},
     }}})
-    assert retain_claims(docs)[1:-1] == ["caritas/own-clickhouse", "caritas/own-zookeeper"]
+    assert retain_claims(docs)[1:] == ["caritas/own-clickhouse", "caritas/own-zookeeper"]
     docs = render_dev_with({"signoz": {"clickhouse": {"persistence": {"enabled": False}}}})
     assert not any("volumeclaim-template-chi" in claim for claim in retain_claims(docs))
     docs = render_dev_with({"signoz": {"clickhouse": {
@@ -480,9 +482,9 @@ def assert_second_review_findings() -> None:
         "coordination/data-caritas-zookeeper-2",
     ]
     docs = render_dev_with({"signoz": {"clickhouse": {"zookeeper": {"replicaCount": 2, "dataLogDir": "/bitnami/zookeeper/log"}}}})
-    assert retain_claims(docs)[-3:-1] == ["caritas/data-log-caritas-zookeeper-0", "caritas/data-log-caritas-zookeeper-1"]
+    assert retain_claims(docs)[-2:] == ["caritas/data-log-caritas-zookeeper-0", "caritas/data-log-caritas-zookeeper-1"]
     docs = render_dev_with({"signoz": {"clickhouse": {"zookeeper": {"persistence": {"dataLogDir": {"existingClaim": "own-log"}}}}}})
-    assert retain_claims(docs)[-2] == "caritas/own-log"
+    assert retain_claims(docs)[-1] == "caritas/own-log"
     docs = render_dev_with({"signoz": {"postgresql": {"enabled": True, "replicaCount": 2}}})
     claims = retain_claims(docs)
     assert claims[:2] == ["caritas/pgdata-caritas-postgresql-0", "caritas/pgdata-caritas-postgresql-1"], claims
@@ -904,29 +906,46 @@ def assert_signal_backup(dev: dict[tuple[str, str], dict[str, Any]]) -> None:
         ({"files": {"config.d/97-oriso-signal-backup-disk.xml": None}}, "signalBackup needs signoz.clickhouse to mount claim"),
         ({"layout": {"shardsCount": 1, "replicasCount": 2}}, "supports one ClickHouse shard and replica"),
     ):
-        error = render_dev_fails({"signoz": {"clickhouse": clickhouse}})
+        error = render_dev_fails({"signoz": {"clickhouse": clickhouse}}, extra_values=(SIGNAL_BACKUP_OVERLAY,))
         assert message in error, (clickhouse, error)
     # External ClickHouse: nothing embedded to back up, so nothing renders.
-    external = render_dev_with({"signoz": {"clickhouse": {"enabled": False},
-                                           "externalClickhouse": {"host": "clickhouse.example"}}})
+    external = render_dev_with(
+        {"signoz": {"clickhouse": {"enabled": False}, "externalClickhouse": {"host": "clickhouse.example"}}},
+        extra_values=(SIGNAL_BACKUP_OVERLAY,),
+    )
     assert not any("signal-backup" in name for _, name in external)
     # ClickHouse in its own namespace: the claim, script, Secret and CronJob follow it.
-    split = render_dev_with({"signoz": {"clickhouse": {"namespace": "telemetry"}}})
+    split = render_dev_with(
+        {"signoz": {"clickhouse": {"namespace": "telemetry"}}}, extra_values=(SIGNAL_BACKUP_OVERLAY,),
+    )
     signal = {kind: doc for (kind, name), doc in split.items() if "signal-backup" in name}
     assert set(signal) == {"PersistentVolumeClaim", "ConfigMap", "Secret", "CronJob"}, set(signal)
     assert {doc["metadata"]["namespace"] for doc in signal.values()} == {"telemetry"}
     assert "telemetry/signoz-clickhouse-signal-backup" in retain_claims(split)
     assert env(signal["CronJob"]["spec"]["jobTemplate"])["CLICKHOUSE_URL"] == "http://caritas-clickhouse.telemetry.svc:8123/"
-    # Off by default: no claim, CronJob or retain entry outside Dev.
-    off = render_dev_with({"signoz": {"orisoDataProtection": {"signalBackup": {"enabled": False}},
-                                      "clickhouse": {"additionalVolumes": [], "additionalVolumeMounts": []}}})
-    assert not any("signal-backup" in name for _, name in off), sorted(n for _, n in off if "signal" in n)
-    assert "caritas/signoz-clickhouse-signal-backup" not in retain_claims(off)
+
+
+def assert_signal_backup_off(dev: dict[tuple[str, str], dict[str, Any]]) -> None:
+    claim = "signoz-clickhouse-signal-backup"
+    chi = dev[("ClickHouseInstallation", "caritas-clickhouse")]["spec"]
+    assert "config.d/97-oriso-signal-backup-disk.xml" not in chi["configuration"]["files"]
+    for template in chi["templates"]["podTemplates"]:
+        spec = template["spec"]
+        assert all(volume.get("persistentVolumeClaim", {}).get("claimName") != claim
+                   for volume in spec.get("volumes", []))
+        assert all(mount["mountPath"] != "/var/lib/clickhouse-signal-backup/"
+                   for container in spec["containers"] for mount in container.get("volumeMounts", []))
+    assert not any("signal-backup" in name for _, name in dev)
+    assert f"caritas/{claim}" not in retain_claims(dev)
+    assert ("CronJob", "caritas-signoz-data-protection-backup") in dev
+    assert "caritas/data-volumeclaim-template-chi-caritas-clickhouse-cluster-0-0-0" in retain_claims(dev)
 
 
 def main() -> None:
     dev = by_key(render("values-dev.yaml"))
-    assert_signal_backup(dev)
+    assert_signal_backup_off(dev)
+    assert_signal_backup_off(by_key(render("values-dev.yaml", helm_args=("--is-upgrade",))))
+    assert_signal_backup(by_key(render("values-dev.yaml", SIGNAL_BACKUP_OVERLAY)))
     defaults = by_key(render())
     assert_dev(dev)
     assert_default_off(defaults)

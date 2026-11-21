@@ -808,7 +808,7 @@ signoz:
     # Daily native ClickHouse archive of the six SigNoz databases onto a kept,
     # Retain claim that ClickHouse mounts as disk oriso_signal_backup (#499).
     # Enabling also needs that mount and disk under signoz.clickhouse; see
-    # values-dev.yaml. The render fails if they are missing.
+    # values-dev-clickhouse-signal-backup.yaml. The render fails if they are missing.
     signalBackup:
       enabled: false
       claim: signoz-clickhouse-signal-backup

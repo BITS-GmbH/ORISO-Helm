@@ -2,7 +2,7 @@
 
 import unittest
 
-from render_signoz_dev_observability_test import by_key, render
+from render_signoz_dev_observability_test import SIGNAL_BACKUP_OVERLAY, by_key, render
 
 
 RELEASE = "clickhouse-audit"
@@ -11,8 +11,9 @@ POLICY = ("NetworkPolicy", f"{RELEASE}-ingress")
 ENABLED = ("--set", "networkPolicies.clickhouseIngress.enabled=true")
 
 
-def dev(*args):
-    return by_key(render("values-dev.yaml", release=RELEASE, helm_args=args))
+def dev(*args, signal_backup=False):
+    values = ("values-dev.yaml", SIGNAL_BACKUP_OVERLAY) if signal_backup else ("values-dev.yaml",)
+    return by_key(render(*values, release=RELEASE, helm_args=args))
 
 
 class ClickHouseIngressPolicyTest(unittest.TestCase):
@@ -31,8 +32,8 @@ class ClickHouseIngressPolicyTest(unittest.TestCase):
         self.assertFalse(any(kind == "ClickHouseInstallation" for kind, name in chart))
 
     def test_peers_are_the_rendered_release_workloads(self):
-        baseline = dev()
-        chart = dev(*ENABLED)
+        baseline = dev(signal_backup=True)
+        chart = dev(*ENABLED, signal_backup=True)
         policy = chart.pop(POLICY)
         self.assertEqual(policy["metadata"]["namespace"], NAMESPACE)
         self.assertEqual(set(chart), set(baseline))
@@ -82,6 +83,11 @@ class ClickHouseIngressPolicyTest(unittest.TestCase):
             {"from": [{"podSelector": clickhouse}], "ports": tcp("client", "interserver")},
             {"from": [{"podSelector": {"matchLabels": backup_labels}}], "ports": tcp("http")},
         ])
+
+    def test_signal_backup_peer_requires_the_backup_overlay(self):
+        ordinary = dev(*ENABLED)[POLICY]["spec"]["ingress"]
+        with_backup = dev(*ENABLED, signal_backup=True)[POLICY]["spec"]["ingress"]
+        self.assertEqual(ordinary, with_backup[:-1])
 
     def test_hook_and_clickhouse_init_keep_their_peers(self):
         chart = dev(
