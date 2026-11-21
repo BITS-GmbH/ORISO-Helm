@@ -116,6 +116,7 @@ own switch:
 |---|---|---|
 | `signoz.orisoObservability.enabled` | `false` | Render the ConfigMap and the hook Job. |
 | `signoz.orisoObservability.conformanceCheck` | `false` | Require fresh grouped data on the three core dashboards. Validate the optional E2E query responses. Execute the alert queries and verify collector freshness and separation. |
+| `signoz.orisoObservability.agentForwarding` | `false` | Add the existing private webhook alongside Slack on the six core alerts on Dev. Follow the [Dev forwarding runbook](signoz-dev.md#forward-dev-alerts-to-buzz-and-openclaw). |
 | `signoz.orisoObservability.channelName` | `oriso-alerts-slack` | Existing channel the rules route to. |
 | `signoz.orisoObservability.apiKeySecret.name` / `.key` | `""` / `apiKey` | Existing Secret with the SigNoz API key; the name is required when on. |
 

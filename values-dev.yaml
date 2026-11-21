@@ -123,6 +123,9 @@ signoz:
       ORISO_DEPLOYMENT_ENVIRONMENT: "dev"
   orisoIngress:
     devAliasRedirect: true
+  # Replaces the hand-applied, keyed MCP server (#304); callers bring their own key.
+  orisoMcpServer:
+    enabled: true
 
 # Node agent (pod logs, host and kubelet metrics) and cluster collector.
 signozCollector:
@@ -206,6 +209,19 @@ userService:
 matrix:
   synapseServerName: "matrix.oriso.org"
   matrixServerName: "matrix.oriso.org"
+  # Synapse CPU on Dev (2026-11-21). At the shipped 500m limit Synapse was CFS
+  # throttled: cgroup cpu.stat showed 20,506 throttled periods and 1,737 s
+  # throttled against 1,337 s of CPU used. /livekit/jwt/sfu/get timed out
+  # while it waited on Synapse, and 1:1 calls failed with "Call service
+  # unavailable (503)". Dev was raised by hand with kubectl set resources;
+  # this keeps the value across helm upgrades. Memory stays at the default.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 1500m
+      memory: 1Gi
   # Synapse rc_invites for Dev (ORISO-UserService#1736). A new enquiry in
   # Springfield QA Dev invites ~17 counsellors into its holding room at once;
   # with the shipped burst of 10 the rest waits, and the standing supervisor's

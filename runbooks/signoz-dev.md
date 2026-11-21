@@ -239,6 +239,53 @@ retrying. The keep annotation also leaves the live Ingress in place when a
 later render omits the alias. Retire the alias through a separately reviewed
 removal of the Ingress and its public DNS record.
 
+### Adopt the SigNoz MCP server
+
+Since 2026-10-14, Dev has had a hand-applied `signoz-mcp-server` Deployment,
+Service and Ingress at `https://dev.oriso.org/signoz-mcp`. That server held a
+SigNoz API key, so anyone could use it without credentials. The Dev overlay now
+renders the same three objects with `signoz.orisoMcpServer.enabled`. The image
+is pinned, the server runs as non-root with a read-only root filesystem, and it
+holds no API key. Each client sends its own SigNoz API key in a
+`SIGNOZ-API-KEY` header, and requests without one get HTTP 401.
+
+In the approved Dev upgrade window, give the three existing objects Helm
+ownership so the upgrade replaces them instead of failing on existing objects:
+
+```bash
+for kind in deployment service ingress; do
+  kubectl -n caritas label "$kind" signoz-mcp-server app.kubernetes.io/managed-by=Helm --overwrite
+  kubectl -n caritas annotate "$kind" signoz-mcp-server \
+    meta.helm.sh/release-name=caritas meta.helm.sh/release-namespace=caritas --overwrite
+done
+```
+
+After the upgrade, revoke the SigNoz API key the old Deployment used
+(**Settings → API Keys**). It was usable through the public route. Then check
+from outside the cluster:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://dev.oriso.org/signoz-mcp/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Expect 401. Clients configure the URL `https://dev.oriso.org/signoz-mcp/mcp`
+with their own key in the `SIGNOZ-API-KEY` header.
+
+### Operations surfaces on Dev (#304)
+
+External anonymous readback, 2026-11-21, for the DPIA technical and
+organisational measures annex:
+
+| Surface | Control on Dev |
+| --- | --- |
+| SigNoz UI `/signoz` | SigNoz login. The page loads, but its API returns 401 without a session. Basic Auth cannot sit in front because SigNoz sends its own `Authorization: Bearer` header. |
+| SigNoz MCP `/signoz-mcp` | No server-held key. Each request needs the caller's SigNoz API key (above). |
+| Storybook `/storybook-*` | The chart renders Basic Auth (`storybook.ingress.authSecret`). Live is still a hand-applied Ingress without auth until the `storybook-basic-auth` Secret exists and Helm owns the route. |
+| HealthDashboard `/health` | Public status only, by design (ORISO-HealthDashboard#57). |
+| Redis Commander, Status page | Not deployed on Dev. Both paths fall through to the App. |
+
 ### External HTTPS, TLS expiry and liveness
 
 Run the credential-free probe at least hourly on a runner outside the Dev
@@ -415,8 +462,10 @@ its own approved network and identity setup.
 ## nginx metrics (ingress-nginx)
 
 The ingress controller runs in the namespace `ingress-nginx`, outside the Helm
-release. `global.observability.externalIngressNginxNamespace: ingress-nginx`
-(Dev) makes the cluster collector scrape its pod IPs on port 10254. This
+release. See [Dev ingress HTTP/2 mitigation](dev-ingress-http2.md) before
+reinstalling the controller ConfigMap.
+`global.observability.externalIngressNginxNamespace: ingress-nginx` (Dev)
+makes the cluster collector scrape its pod IPs on port 10254. This
 setting requires `signozCollector.enabled=true`. It works with general
 application metrics disabled. The chart
 cannot switch metrics on in the controller: it must run with
@@ -427,6 +476,70 @@ After the rollout, in SigNoz open Metrics and search `nginx_ingress_controller_r
 data from the last 5 minutes must appear. If it does not, check the controller
 args (`kubectl -n ingress-nginx get deploy ingress-nginx-controller -o yaml | grep enable-metrics`)
 and the collector log for `ingress-nginx` scrape errors.
+
+## Forward Dev alerts to Buzz and OpenClaw
+
+Keep `oriso-alerts-slack` as the Slack channel. Confirm the first delivered
+Slack alert and the approved private route from Dev to the Dreambau forwarder
+before activating the second channel. Verify the forwarder's dedicated Buzz
+and OpenClaw identities. [Slack delivery #468](https://github.com/OpenResilienceInitiative/ORISO-Helm/issues/468) · [Dreambau forwarder](https://github.com/Storypapst/dreambau/pull/223)
+
+With forwarding off, append a read-only Secret mount to the existing SigNoz
+application container volumes. Mount the approved webhook credential as
+`/var/run/oriso-signoz-agent/token` and verify it is readable in the
+container. Use `signoz.signoz.additionalVolumes` and
+`signoz.signoz.additionalVolumeMounts` in the reviewed Dev override.
+Create the existing-channel dependency `oriso-alerts-agents` in SigNoz
+with the approved private route and file-backed credential:
+
+```json
+{
+  "name": "oriso-alerts-agents",
+  "webhook_configs": [{
+    "url": "https://<approved-private-host>/signoz/alerts",
+    "send_resolved": false,
+    "http_config": {
+      "follow_redirects": false,
+      "authorization": {
+        "type": "Bearer",
+        "credentials_file": "/var/run/oriso-signoz-agent/token"
+      }
+    }
+  }]
+}
+```
+
+Allow the Alertmanager configuration sync after changing the channel.
+SigNoz v0.135.1 uses a one-minute polling interval. [Pinned sync configuration](https://github.com/SigNoz/signoz/blob/v0.135.1/pkg/alertmanager/config.go#L38-L44)
+
+Set `signoz.orisoObservability.agentForwarding=true` in the approved Dev
+override and run the managed provisioning Job. The provisioner verifies the
+Slack and webhook channel types before writing rules. The six core catalog
+rules use both channels and include the fixed rule slug and unitless value.
+The forwarder configuration maps the slugs to these services.
+
+| Rule | Service |
+| --- | --- |
+| `provisioning-compensation-failure` | `userservice` |
+| `availability-store-failure` | `userservice` |
+| `notification-failure` | `userservice` |
+| `unencrypted-room` | `userservice` |
+| `clickhouse-capacity` | `clickhouse` |
+| `collector-staleness` | `collector` |
+
+Read back the rules with the existing Dev key and
+`--mode check --skip-telemetry --agent-forwarding`. For the approved live
+test, select a rule with a real numeric sample and use
+`--mode test-rule --rule <slug> --agent-forwarding`. The evaluation count
+confirms the query produced an alert. Verify the Slack, Buzz and OpenClaw
+receipts and check that the latter two contain the fixed rule, service and
+value. The forwarder handles measured firing values. It leaves No Data and
+resolved delivery to the configured SigNoz channels.
+
+To restore Slack-only routing, set `agentForwarding=false` and run the
+managed Job again. Read back the same six rule IDs with Slack routes and
+the forwarding fields removed before retiring the private webhook and
+credential mount.
 
 ## ClickHouse memory and old system tables
 

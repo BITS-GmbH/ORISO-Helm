@@ -120,13 +120,11 @@ spec:
             scheme: HTTP
           initialDelaySeconds: 10
           periodSeconds: 10
+        # Host values.yaml copies written before matrix.resources existed keep
+        # the previous fixed values through this fallback.
+        {{- $synapseResources := .Values.matrix.resources | default (dict "requests" (dict "cpu" "250m" "memory" "512Mi") "limits" (dict "cpu" "500m" "memory" "1Gi")) }}
         resources:
-          limits:
-            cpu: 500m
-            memory: 1Gi
-          requests:
-            cpu: 250m
-            memory: 512Mi
+          {{- toYaml $synapseResources | nindent 10 }}
         securityContext:
           {{- include "oriso.containerSecurityContext" (dict) | nindent 10 }}
         volumeMounts:
