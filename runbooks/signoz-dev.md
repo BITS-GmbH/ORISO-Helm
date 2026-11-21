@@ -239,6 +239,53 @@ retrying. The keep annotation also leaves the live Ingress in place when a
 later render omits the alias. Retire the alias through a separately reviewed
 removal of the Ingress and its public DNS record.
 
+### Adopt the SigNoz MCP server
+
+Since 2026-10-14, Dev has had a hand-applied `signoz-mcp-server` Deployment,
+Service and Ingress at `https://dev.oriso.org/signoz-mcp`. That server held a
+SigNoz API key, so anyone could use it without credentials. The Dev overlay now
+renders the same three objects with `signoz.orisoMcpServer.enabled`. The image
+is pinned, the server runs as non-root with a read-only root filesystem, and it
+holds no API key. Each client sends its own SigNoz API key in a
+`SIGNOZ-API-KEY` header, and requests without one get HTTP 401.
+
+In the approved Dev upgrade window, give the three existing objects Helm
+ownership so the upgrade replaces them instead of failing on existing objects:
+
+```bash
+for kind in deployment service ingress; do
+  kubectl -n caritas label "$kind" signoz-mcp-server app.kubernetes.io/managed-by=Helm --overwrite
+  kubectl -n caritas annotate "$kind" signoz-mcp-server \
+    meta.helm.sh/release-name=caritas meta.helm.sh/release-namespace=caritas --overwrite
+done
+```
+
+After the upgrade, revoke the SigNoz API key the old Deployment used
+(**Settings → API Keys**). It was usable through the public route. Then check
+from outside the cluster:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://dev.oriso.org/signoz-mcp/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Expect 401. Clients configure the URL `https://dev.oriso.org/signoz-mcp/mcp`
+with their own key in the `SIGNOZ-API-KEY` header.
+
+### Operations surfaces on Dev (#304)
+
+External anonymous readback, 2026-11-21, for the DPIA technical and
+organisational measures annex:
+
+| Surface | Control on Dev |
+| --- | --- |
+| SigNoz UI `/signoz` | SigNoz login. The page loads, but its API returns 401 without a session. Basic Auth cannot sit in front because SigNoz sends its own `Authorization: Bearer` header. |
+| SigNoz MCP `/signoz-mcp` | No server-held key. Each request needs the caller's SigNoz API key (above). |
+| Storybook `/storybook-*` | The chart renders Basic Auth (`storybook.ingress.authSecret`). Live is still a hand-applied Ingress without auth until the `storybook-basic-auth` Secret exists and Helm owns the route. |
+| HealthDashboard `/health` | Public status only, by design (ORISO-HealthDashboard#57). |
+| Redis Commander, Status page | Not deployed on Dev. Both paths fall through to the App. |
+
 ### External HTTPS, TLS expiry and liveness
 
 Run the credential-free probe at least hourly on a runner outside the Dev
