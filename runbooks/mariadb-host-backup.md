@@ -2,7 +2,11 @@
 
 The Dev master runs a nightly logical backup of the Helm MariaDB StatefulSet with [`backup_mariadb.py`](../scripts/backup_mariadb.py). The script checks that `pod/mariadb-0` is ready before it reads anything. It writes one compressed dump per application schema into a private staging folder and publishes that folder only after every schema succeeded. A failed run leaves no folder behind.
 
-This replaces the hand-installed `/root/db-backups/backup-mariadb.sh` cron job. That job pinned the pod name `oriso-mariadb-0`. The chart names the pod `mariadb-0`, so every run since 14 July 2026 has failed on the pod lookup and left an empty dated folder. `tests/test_mariadb_host_backup_units.py` now fails the chart CI if the script's pod name and the rendered StatefulSet drift apart again.
+This replaces the hand-installed `/root/db-backups/backup-mariadb.sh` cron job, which is not in Git. That job pinned the pod name `oriso-mariadb-0` and called `mysql`/`mysqldump`. The chart names the pod `mariadb-0`, and the MariaDB 11.0.6 image ships only `mariadb`/`mariadb-dump`. Every run from 14 July to 21 November 2026 therefore failed and left an empty dated folder. `backup_mariadb.py` uses `pod/mariadb-0` and the `mariadb`/`mariadb-dump` clients. `tests/test_mariadb_host_backup_units.py` fails the chart CI if the script's pod name and the rendered StatefulSet drift apart again.
+
+On 21 November 2026 the legacy script was repaired in place as an interim fix (copy of the old version: `/root/db-backups/backup-mariadb.sh.bak-20261121`). Its first good run is `/root/db-backups/mariadb/20261121_070458`. The last complete July nightlies (`20260709`–`20260713`) were copied to `/root/db-backups/archive-nightly-2026-07`, so the legacy job's keep-latest-5 clean-up cannot delete them. Keep that archive folder until the retention decision under #282 says otherwise.
+
+The legacy job and this timer both run at 02:00 UTC. Run only one of them: retire the legacy cron line in the same step as enabling the timer, as shown below.
 
 Installing or changing this on Dev is an operator change on the master. Do it only with explicit approval for that task. Off-site storage, encryption key custody, retention and restore cadence stay under [Helm #282](https://github.com/OpenResilienceInitiative/ORISO-Helm/issues/282) and [Helm #533](https://github.com/OpenResilienceInitiative/ORISO-Helm/issues/533).
 
@@ -39,7 +43,7 @@ systemctl enable --now oriso-mariadb-backup.timer
 systemctl list-timers oriso-mariadb-backup.timer --no-pager
 ```
 
-Keep the existing dumps in `/root/db-backups` until a restore from the new folder has been verified with [the isolated restore runbook](mariadb-isolated-restore.md).
+Keep the existing dumps in `/root/db-backups`, including `mariadb/` from the legacy job and `archive-nightly-2026-07/`, until a restore from the new folder has been verified with [the isolated restore runbook](mariadb-isolated-restore.md).
 
 ## Check the next morning
 
