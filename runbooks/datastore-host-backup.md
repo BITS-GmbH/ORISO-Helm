@@ -64,5 +64,5 @@ Restore into a scratch instance with no mail, webhook or application access, nev
 
 ## Notes
 
-- `mongodump` has no environment variable for its password, so the pod's own `MONGO_INITDB_ROOT_PASSWORD` is passed on the command line inside the MongoDB container. Only root in that container can see it.
+- `mongodump` has no environment variable for its password. The script writes it into a private temporary `--config` file inside the MongoDB container (mode 0600) and removes the file on exit, so the password never appears in a process list.
 - The dump is a logical backup taken while the pod runs. MongoDB `--archive` is not a point-in-time snapshot across collections. PostgreSQL's `pg_dump` is consistent.

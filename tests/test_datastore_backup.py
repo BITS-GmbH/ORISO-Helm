@@ -97,6 +97,15 @@ class DatastoreBackupTest(unittest.TestCase):
         self.assertIn('PGPASSWORD="$POSTGRES_PASSWORD"', dump[-1])
         self.assertNotIn("secret", " ".join(dump).lower().replace("credential", ""))
 
+    def test_mongodb_password_is_not_a_command_line_argument(self):
+        self.run_backup("mongodb", "ok", "--age-recipients-file", str(self.recipients))
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        script = next(c for c in calls if c[6] == "exec")[-1]
+        self.assertNotIn("--password", script)
+        self.assertIn("umask 077", script)
+        self.assertIn("--config=", script)
+        self.assertIn("rm -f", script)
+
     def test_failures_publish_nothing(self):
         for scenario in ("missing-pod", "not-ready", "failed-dump", "empty-dump"):
             result = self.run_backup("mongodb", scenario, "--age-recipients-file", str(self.recipients))

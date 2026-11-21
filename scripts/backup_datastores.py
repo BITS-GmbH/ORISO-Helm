@@ -34,11 +34,14 @@ TARGETS = {
         "container": "mongodb",
         "prefix": "mongodb",
         "artifact": "mongodb.archive.gz.age",
-        # mongodump has no environment variable for the password; it stays inside the pod.
+        # mongodump has no environment variable for the password, and a --password argument would show in the
+        # process list. Its --config file may hold the password, so write a private file and remove it on exit.
         "dump": (
             ': "${MONGO_INITDB_ROOT_PASSWORD:?MongoDB credential is unavailable}"; '
-            'exec mongodump --archive --quiet --authenticationDatabase=admin '
-            '--username="$MONGO_INITDB_ROOT_USERNAME" --password="$MONGO_INITDB_ROOT_PASSWORD"'
+            "umask 077; config=$(mktemp); trap 'rm -f \"$config\"' EXIT; "
+            "printf \"password: '%s'\\n\" \"$(printf %s \"$MONGO_INITDB_ROOT_PASSWORD\" | sed \"s/'/''/g\")\" > \"$config\"; "
+            'mongodump --archive --quiet --authenticationDatabase=admin '
+            '--username="$MONGO_INITDB_ROOT_USERNAME" --config="$config"'
         ),
     },
     "matrix-postgres": {
