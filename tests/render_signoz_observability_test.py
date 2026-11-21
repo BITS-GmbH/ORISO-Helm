@@ -432,6 +432,24 @@ def main() -> None:
     }
     assert dev_env["ORISO_ENVIRONMENT"]["value"] == "dev"
     assert dev_env["ORISO_CLUSTER_NAME"]["value"] == "oriso-dev"
+    assert dev_env["ORISO_AGENT_FORWARDING"]["value"] == "false"
+    forward_args = ("--set", "signoz.orisoObservability.agentForwarding=true")
+    forwarded = render(enabled=True, environment="dev", cluster_name="oriso-dev", extra_args=forward_args)
+    forward_job = find(forwarded, "Job", "caritas-signoz-observability")
+    forward_env = forward_job["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert {"name": "ORISO_AGENT_FORWARDING", "value": "true"} in forward_env
+    for result in (
+        render_result(enabled=True, extra_args=forward_args),
+        render_result(enabled=False, environment="dev", cluster_name="oriso-dev", extra_args=forward_args),
+    ):
+        assert result.returncode != 0
+        assert "agentForwarding=true requires enabled Dev managed observability" in result.stderr
+    invalid_forward = render_result(
+        enabled=True, environment="dev", cluster_name="oriso-dev",
+        extra_args=("--set-string", "signoz.orisoObservability.agentForwarding=false"),
+    )
+    assert invalid_forward.returncode != 0
+    assert "agentForwarding must be a boolean" in invalid_forward.stderr
 
     disabled_names = {
         (item.get("kind"), item.get("metadata", {}).get("name"))

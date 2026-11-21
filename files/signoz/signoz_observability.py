@@ -142,6 +142,10 @@ REQUIRED_ALERT_SLUGS = {
     "clickhouse-capacity",
     "collector-staleness",
 }
+AGENT_CHANNEL = "oriso-alerts-agents"
+FORWARD_RULE = "oriso_forward_rule"
+FORWARD_VALUE = "oriso_forward_value"
+FORWARD_VALUE_TEMPLATE = "{{$value}}"
 ALLOWED_GROUPS = {
     "condition",
     "demand",
@@ -733,7 +737,10 @@ def materialize_assets(
     environment: str,
     cluster_name: str,
     channel_name: str,
+    agent_forwarding: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if agent_forwarding and environment != "dev":
+        raise RuntimeError("agent forwarding requires Dev")
     replacements = {
         ENVIRONMENT_TOKEN: environment,
         ENVIRONMENT_SLUG_TOKEN: environment.lower().replace("_", "-"),
@@ -741,11 +748,21 @@ def materialize_assets(
         CHANNEL_TOKEN: channel_name,
     }
     materialized_alerts = _replace_tokens(copy.deepcopy(alerts), replacements)
+    forwarding_channels = list(_required_channels(channel_name, agent_forwarding))
     for alert in materialized_alerts:
-        if alert["_orisoSlug"] in PLATFORM_SIGNALS:
-            alert["condition"]["compositeQuery"]["queries"][0]["spec"] = _platform_query(
-                alert["_orisoSlug"], environment, cluster_name, guarded=True,
+        slug = alert["_orisoSlug"]
+        condition = alert["condition"]
+        if slug in PLATFORM_SIGNALS:
+            condition["compositeQuery"]["queries"][0]["spec"] = _platform_query(
+                slug, environment, cluster_name, guarded=True,
             )
+        elif agent_forwarding and slug in REQUIRED_ALERT_SLUGS:
+            alert["preferredChannels"] = forwarding_channels.copy()
+            condition["compositeQuery"]["unit"] = ""
+            for threshold in condition["thresholds"]["spec"]:
+                threshold["channels"] = forwarding_channels.copy()
+            alert["labels"][FORWARD_RULE] = slug
+            alert.setdefault("annotations", {})[FORWARD_VALUE] = FORWARD_VALUE_TEMPLATE
     return _replace_tokens(copy.deepcopy(dashboards), replacements), materialized_alerts
 
 
@@ -823,6 +840,7 @@ def validate_asset_contract(
     environment: str,
     cluster_name: str,
     channel_name: str,
+    agent_forwarding: bool = False,
 ) -> None:
     slugs = {alert.get("_orisoSlug") for alert in alerts}
     required = REQUIRED_ALERT_SLUGS | (slugs & OPTIONAL_ALERT_SLUGS)
@@ -908,11 +926,21 @@ def validate_asset_contract(
             raise RuntimeError(
                 f"alert {alert.get('alert')} is not scoped to {environment}"
             )
+        forwards = agent_forwarding and slug in REQUIRED_ALERT_SLUGS
+        channels = list(_required_channels(channel_name, forwards))
         thresholds = alert["condition"]["thresholds"]["spec"]
-        if any(threshold["channels"] != [channel_name] for threshold in thresholds):
+        if (not platform and len(thresholds) != 1) or any(
+            threshold.get("channels") != channels for threshold in thresholds
+        ):
             raise RuntimeError(
                 f"alert {alert.get('alert')} is not routed to the managed channel"
             )
+        expected_rule = alert["_orisoSlug"] if forwards else None
+        expected_value = FORWARD_VALUE_TEMPLATE if forwards else None
+        if _forwarding_fields(alert) != (expected_rule, expected_value) or (
+            forwards and alert["condition"]["compositeQuery"].get("unit") != ""
+        ):
+            raise RuntimeError(f"alert {alert['alert']} has invalid forwarding fields")
         if alert.get("labels", {}).get("environment") != environment:
             raise RuntimeError(
                 f"alert {alert.get('alert')} has incorrect environment label"
@@ -1228,16 +1256,31 @@ def _list(
     return value
 
 
-def require_channel(client: SignozClient, channel_name: str) -> None:
-    """Fail unless the hand-made Slack channel exists. Never writes channels."""
-    if not any(
-        item.get("name") == channel_name and item.get("type") == "slack"
-        for item in _list(client, "/api/v1/channels")
-    ):
-        raise RuntimeError(
-            f"notification channel {channel_name!r} (type slack) is missing; "
-            "it is created by hand in SigNoz, never by this program"
-        )
+def _required_channels(channel_name: str, agent_forwarding: bool) -> dict[str, str]:
+    channels = {channel_name: "slack"}
+    if agent_forwarding:
+        if channel_name == AGENT_CHANNEL:
+            raise RuntimeError("Slack and agent forwarding require separate channels")
+        channels[AGENT_CHANNEL] = "webhook"
+    return channels
+
+
+def _forwarding_fields(alert: dict[str, Any]) -> tuple[str | None, str | None]:
+    labels = alert.get("labels") or {}
+    annotations = alert.get("annotations") or {}
+    return labels.get(FORWARD_RULE), annotations.get(FORWARD_VALUE)
+
+
+def require_channel(client: SignozClient, channel_name: str, *, agent_forwarding: bool = False) -> None:
+    """Verify existing channel identities before a managed rule or test can be written."""
+    channels = _list(client, "/api/v1/channels")
+    for name, kind in _required_channels(channel_name, agent_forwarding).items():
+        named = [item for item in channels if item.get("name") == name]
+        if len(named) != 1 or named[0].get("type") != kind:
+            raise RuntimeError(
+                f"notification channel {name!r} (type {kind}) is missing or ambiguous; "
+                "it is created by hand in SigNoz"
+            )
 
 
 def require_heartbeat_channel(client: SignozClient, channel_name: str) -> None:
@@ -1754,6 +1797,8 @@ def validate_live_alert(
 
     current_thresholds = current_condition["thresholds"]
     expected_thresholds = expected_condition["thresholds"]
+    if len(current_thresholds["spec"]) != len(expected_thresholds["spec"]):
+        raise RuntimeError(f"stored alert threshold drift: {expected['alert']}")
     keys = ("name", "target", "matchType", "op")
     if promql:
         if (
@@ -1762,7 +1807,6 @@ def validate_live_alert(
             or current.get("ruleType") != expected["ruleType"]
             or labels.get("severity") != expected["labels"].get("severity")
             or current_thresholds.get("kind") != "basic"
-            or len(current_thresholds["spec"]) != len(expected_thresholds["spec"])
         ):
             raise RuntimeError(f"stored alert threshold drift: {expected['alert']}")
         keys += ("targetUnit", "recoveryTarget")
@@ -1773,8 +1817,13 @@ def validate_live_alert(
     for current_threshold, expected_threshold in pairs:
         if any(current_threshold.get(key) != expected_threshold.get(key) for key in keys):
             raise RuntimeError(f"stored alert threshold drift: {expected['alert']}")
-        if current_threshold.get("channels") != [channel_name]:
+        channels = expected_threshold["channels"]
+        if current_threshold.get("channels") != channels or channel_name not in channels:
             raise RuntimeError(f"stored alert route drift: {expected['alert']}")
+    if _forwarding_fields(current) != _forwarding_fields(expected):
+        raise RuntimeError(f"stored alert forwarding fields drift: {expected['alert']}")
+    if _forwarding_fields(expected)[0] and current_condition["compositeQuery"].get("unit") not in (None, ""):
+        raise RuntimeError(f"stored alert forwarding unit drift: {expected['alert']}")
 
     current_query = current_condition["compositeQuery"]["queries"][0]["spec"]
     expected_query = expected_condition["compositeQuery"]["queries"][0]["spec"]
@@ -1811,6 +1860,7 @@ def prove_conformance(
     environment: str,
     cluster_name: str,
     channel_name: str,
+    agent_forwarding: bool = False,
     telemetry: bool = True,
 ) -> None:
     """Read every managed object back and compare it with the catalog.
@@ -1825,6 +1875,7 @@ def prove_conformance(
         environment=environment,
         cluster_name=cluster_name,
         channel_name=channel_name,
+        agent_forwarding=agent_forwarding,
     )
     listed_dashboards = {
         item.get("name"): item
@@ -1877,7 +1928,7 @@ def prove_conformance(
             freshness_query = query
             freshness_window_minutes = eval_window_minutes(expected)
 
-    require_channel(client, channel_name)
+    require_channel(client, channel_name, agent_forwarding=agent_forwarding)
     if freshness_query is None:
         raise RuntimeError("managed collector-staleness alert is missing")
     if not telemetry:
@@ -1953,6 +2004,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--channel-name",
         default=os.environ.get("SIGNOZ_CHANNEL_NAME", "oriso-alerts-slack"),
         help="Existing SigNoz notification channel the alert rules route to",
+    )
+    parser.add_argument(
+        "--agent-forwarding",
+        action="store_true",
+        default=os.environ.get("ORISO_AGENT_FORWARDING", "false").lower() == "true",
+        help="Add the existing agent webhook to the six core catalog alerts on Dev",
     )
     parser.add_argument(
         "--conformance",
@@ -2041,12 +2098,14 @@ def main(argv: list[str] | None = None) -> int:
         environment=args.environment,
         cluster_name=args.cluster_name,
         channel_name=args.channel_name,
+        agent_forwarding=args.agent_forwarding,
     )
     client = SignozClient(args.api_url, args.api_key, read_only=args.mode == "check")
     client.wait_ready()
 
     if args.mode == "test-rule":
-        require_channel(client, args.channel_name)
+        forwards = args.agent_forwarding and args.rule in REQUIRED_ALERT_SLUGS
+        require_channel(client, args.channel_name, agent_forwarding=forwards)
         payload = build_test_rule(alerts, args.rule)
         result = _unwrap(client.request("POST", "/api/v1/testRule", payload))
         count = result.get("alertCount") if isinstance(result, dict) else None
@@ -2057,6 +2116,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"{args.channel_name!r}"
             )
             return 2
+        if forwards:
+            print(f"PASS: {args.rule!r} evaluated (alertCount={count}). Verify both receiver receipts.")
+            return 0
         print(
             f"PASS: test notification for {args.rule!r} in {args.environment} "
             f"sent to {args.channel_name!r} (alertCount={count})"
@@ -2074,9 +2136,10 @@ def main(argv: list[str] | None = None) -> int:
         validate_asset_contract(
             dashboards, alerts, environment=args.environment,
             cluster_name=args.cluster_name, channel_name=args.channel_name,
+            agent_forwarding=args.agent_forwarding,
         )
         # Channels are hand-made; fail before writing anything if it is absent.
-        require_channel(client, args.channel_name)
+        require_channel(client, args.channel_name, agent_forwarding=args.agent_forwarding)
         existing = _existing_alerts(client, managed_alerts)
         for alert in managed_alerts:
             _optional_alert_writable(alert, existing.get(alert["alert"]))
@@ -2110,6 +2173,7 @@ def main(argv: list[str] | None = None) -> int:
         environment=args.environment,
         cluster_name=args.cluster_name,
         channel_name=args.channel_name,
+        agent_forwarding=args.agent_forwarding,
         telemetry=telemetry,
     )
     if telemetry:

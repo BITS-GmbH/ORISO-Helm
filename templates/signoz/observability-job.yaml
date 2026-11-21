@@ -106,6 +106,8 @@ spec:
               value: {{ $heartbeatChannel | quote }}
             - name: ORISO_E2E_DASHBOARDS
               value: {{ get $managed "e2eDashboards" | default false | quote }}
+            - name: ORISO_AGENT_FORWARDING
+              value: {{ get $managed "agentForwarding" | default false | quote }}
             - name: ORISO_CONFORMANCE_CHECK
               value: {{ get $managed "conformanceCheck" | default false | quote }}
             - name: ORISO_DEPLOYMENT_IDENTITY_ENABLED

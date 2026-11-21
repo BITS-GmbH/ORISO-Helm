@@ -768,6 +768,8 @@ signoz:
   orisoObservability:
     enabled: false
     conformanceCheck: false
+    # Opt in on Dev after the private agent receiver and Slack route have been verified.
+    agentForwarding: false
     # Optional Dev platform rules in the managed catalog.
     platformAlerts:
       enabled: false
