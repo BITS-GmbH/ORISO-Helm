@@ -34,13 +34,61 @@ systemctl show oriso-mariadb-backup.service -p Result -p ExecMainStatus
 ls -l "$(ls -1d /root/db-backups/mariadb-helm/mariadb-* | tail -1)"
 ```
 
-Every application schema must have a non-empty `.sql.gz` file. Then retire the legacy job and enable the timer:
+Every application schema must have a non-empty `.sql.gz` file.
+
+### Switch schedules
+
+Run this block after the manual backup has succeeded. It expects one legacy entry and an inactive, disabled replacement timer. Keep the printed snapshot path for rollback.
 
 ```bash
-crontab -l > /root/db-backups/crontab.before-oriso-mariadb-backup
-crontab -l | grep -v '/root/db-backups/backup-mariadb.sh' | crontab -
-systemctl enable --now oriso-mariadb-backup.timer
-systemctl list-timers oriso-mariadb-backup.timer --no-pager
+(
+  set -euo pipefail
+  umask 077
+  timer=oriso-mariadb-backup.timer
+  if [[ "$(systemctl show "$timer" -p ActiveState --value)" != inactive ||
+        "$(systemctl show "$timer" -p UnitFileState --value)" != disabled ]]; then
+    printf 'Check the existing timer state before switching schedules.\n' >&2
+    exit 1
+  fi
+
+  cutover_dir=$(mktemp -d /root/db-backups/mariadb-scheduler-cutover.XXXXXX)
+  crontab -l > "$cutover_dir/before"
+  if ! awk '
+    $1 == "0" && $2 == "2" && $3 == "*" && $4 == "*" && $5 == "*" &&
+      $6 == "/root/db-backups/backup-mariadb.sh" { removed++; next }
+    { print }
+    END { if (removed != 1) exit 1 }
+  ' "$cutover_dir/before" > "$cutover_dir/after"; then
+    printf 'Expected exactly one 02:00 legacy backup entry. Check %s/before.\n' "$cutover_dir" >&2
+    exit 1
+  fi
+
+  rollback() {
+    local status=$?
+    trap - EXIT
+    if ! systemctl disable --now "$timer"; then
+      printf 'Timer cleanup failed. Check both schedules before retrying.\n' >&2
+    fi
+    if crontab "$cutover_dir/before"; then
+      printf 'Restored the original cron schedule from %s/before.\n' "$cutover_dir" >&2
+    else
+      printf 'Cron restore failed. Original schedule saved in %s/before.\n' "$cutover_dir" >&2
+    fi
+    exit "$status"
+  }
+
+  trap rollback EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  crontab "$cutover_dir/after"
+  systemctl enable --now "$timer"
+  systemctl is-active --quiet "$timer"
+  trap - EXIT HUP INT TERM
+
+  printf 'Original cron schedule saved in %s/before.\n' "$cutover_dir"
+  systemctl list-timers "$timer" --no-pager
+)
 ```
 
 Keep the existing dumps in `/root/db-backups`, including `mariadb/` from the legacy job and `archive-nightly-2026-07/`, until a restore from the new folder has been verified with [the isolated restore runbook](mariadb-isolated-restore.md).
