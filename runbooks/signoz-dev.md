@@ -45,7 +45,8 @@ ssh dev-server
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 cd /root/ORISO-Helm && git fetch origin && git checkout <merged dev commit>
 observability_file=/root/observability-dev.yaml
-python3 scripts/observability_overlay.py values-dev.yaml > "$observability_file"
+observability_inputs=(values-dev.yaml)
+python3 scripts/observability_overlay.py "${observability_inputs[@]}" > "$observability_file"
 values_files=(values.yaml secrets.yaml "$observability_file")
 ```
 
@@ -93,6 +94,9 @@ values_drift
 
 Resolve the listed paths before continuing. Use the approved ordered values
 files, image pin overrides and post-renderer for both the preview and upgrade.
+For a separately approved ClickHouse signal backup, include its values in the
+same projection and check as described in
+[Activate the scheduled archives](signoz-clickhouse-recovery.md#activate-the-scheduled-archives).
 Dev's application images can be updated independently of Helm. The image check
 compares the current direct Helm-managed Deployments, StatefulSets, DaemonSets
 and CronJobs with the proposed manifest, including their init containers.
@@ -119,9 +123,8 @@ kubectl -n caritas get pods -o json | jq -er '
 
 Require a ready row with a start time for each ClickHouse pod.
 
-Run this preflight on the Dev master. For a staged rollout, set
-`expected_observability` to the values file that declares its approved
-observability settings.
+Run this preflight on the Dev master. Use the same approved
+`observability_inputs` array that generated the rollout projection.
 
 ```bash
 # Put the approved image overrides and --post-renderer arguments here.
@@ -135,7 +138,6 @@ signoz_helm_args() {
   done
   helm_args+=("${extra_helm_args[@]}")
 }
-expected_observability=values-dev.yaml
 preflight_signoz() (
   set +x
   set -uo pipefail
@@ -144,7 +146,7 @@ preflight_signoz() (
   test "$(head -n 1 <<<"$drift")" = 0 || { printf '%s\n' "$drift"; exit 1; }
   preview=$(helm upgrade "${helm_args[@]}" --dry-run=server --hide-secret -o json) || exit 1
   printf '%s' "$preview" | jq -e '.config' |
-    python3 scripts/observability_overlay.py "$expected_observability" --check-effective || exit 1
+    python3 scripts/observability_overlay.py "${observability_inputs[@]}" --check-effective || exit 1
   printf '%s' "$preview" | jq -er '.manifest' |
     python3 scripts/check_helm_workload_images.py --namespace caritas --release caritas "$@" || exit 1
   printf '%s' "$preview" | jq -er '.manifest' |
@@ -475,8 +477,8 @@ kubectl -n caritas exec "$POD" -c clickhouse -- clickhouse-client --query "DROP 
 ## ClickHouse internal log retention
 
 For an approved expansion, put the agreed `signoz.clickhouse.persistence.size`
-in the reviewed Dev overlay input. Generate `observability_file` from that
-input and use it as `expected_observability` in the rollout preflight. This
+in the reviewed Dev overlay input. Include that file in `observability_inputs`
+both when generating `observability_file` and when running the preflight. This
 keeps the size change within the approved observability paths checked by
 `values_drift`. The preflight compares the rendered ClickHouseInstallation
 with the request and reported capacity of each existing claim. A provider may
