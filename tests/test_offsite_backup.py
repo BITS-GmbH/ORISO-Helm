@@ -205,6 +205,61 @@ class OffsiteBackupTest(unittest.TestCase):
         carried = json.loads(push_path.read_text())["report"]["mariadb"]
         self.assertEqual(carried["verifiedAt"], copy_time.isoformat())
 
+    def test_verified_upload_survives_failed_pushes_until_the_next_successful_no_op(self):
+        config = offsite.load_config(self.config_path)
+        check_path, push_path = self.root / "check.json", self.root / "push.json"
+
+        def record(command, operation, when, path, mode="ok"):
+            report, problems = operation(config, self.sftp(mode), when)
+            offsite.write_status_file(path, {
+                "command": command, "at": when.isoformat(), "ok": not problems,
+                "report": report, "problems": problems,
+            })
+            return json.loads(path.read_text())
+
+        yesterday = self.now - timedelta(days=1)
+        for prefix in ("mariadb", "mongodb"):
+            self.add_run(prefix, yesterday - timedelta(hours=1))
+        record("push", offsite.push, yesterday, push_path)
+        record("check", offsite.check, yesterday + timedelta(hours=5), check_path)
+
+        archive_at = self.now - timedelta(minutes=30)
+        self.add_run("mariadb", archive_at)
+        record("push", offsite.push, self.now, push_path)
+        observed = self.now + timedelta(hours=1, minutes=30)
+        fresh = signoz_check_journal.read_backup_freshness(
+            check_path, push_path=push_path, now=observed,
+        )
+        self.assertEqual(fresh["stores"]["mariadb"]["reason"], "fresh-archive")
+
+        for minutes in (10, 20):
+            failed = record("push", offsite.push, self.now + timedelta(minutes=minutes),
+                            push_path, mode="down")
+            self.assertFalse(failed["ok"])
+            self.assertEqual(failed["report"], {})
+            self.assertTrue(failed["problems"])
+            self.assertEqual(
+                failed["carriedUploads"]["mariadb"]["verifiedAt"], self.now.isoformat(),
+            )
+            current_archive = signoz_check_journal.read_backup_freshness(
+                check_path, push_path=push_path, now=observed,
+            )["stores"]["mariadb"]
+            self.assertEqual(
+                (current_archive["state"], current_archive["reason"]),
+                ("CRITICAL", "stale-archive"),
+            )
+
+        resumed = record("push", offsite.push, self.now + timedelta(minutes=30), push_path)
+        self.assertTrue(resumed["ok"])
+        self.assertEqual(resumed["report"]["mariadb"]["uploaded"], 0)
+        self.assertEqual(
+            signoz_check_journal.read_backup_freshness(
+                check_path, push_path=push_path, now=observed,
+            ),
+            fresh,
+        )
+        self.assertEqual(resumed["report"]["mariadb"]["verifiedAt"], self.now.isoformat())
+
     def test_no_op_does_not_turn_an_invalid_timestamp_into_verified_evidence(self):
         path = self.root / "push.json"
         old = {

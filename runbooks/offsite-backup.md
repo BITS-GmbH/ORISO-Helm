@@ -118,11 +118,12 @@ next daily verification. A copy with zero uploads for a store carries forward
 that store's verified upload and original verification time when the previous
 copy receipt contains them. A newer verification supersedes that upload evidence.
 
-A failed copy can omit a store from its receipt. A later copy with zero uploads
-then leaves the reader using the last verification, which may show a stale
-archive. After resolving the copy failure, start `oriso-offsite-check.service`
-on the approved backup host. Confirm that the new check receipt records a
-complete archive for the affected store and reevaluate the freshness snapshot.
+A failed copy can omit a store from its report. Its prior verified upload stays
+under `carriedUploads` for recovery. The failed run and its reported problems
+remain visible. A later successful copy that uploads nothing for this store
+restores that receipt with its original verification time. If evidence remains
+stale or missing after recovery, start `oriso-offsite-check.service` on the
+approved backup host and inspect the new check receipt.
 
 Before enabling incident delivery, verify the restricted read command,
 cursor replay, a simulated job failure, a stale archive and one recovery

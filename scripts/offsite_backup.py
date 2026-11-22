@@ -266,7 +266,7 @@ def status_timestamp(value):
 
 
 def preserve_verified_uploads(path, status):
-    """Keep the original verification time when a store has no new upload."""
+    """Keep verified receipts across interrupted runs without changing their timestamps."""
     try:
         with path.open("rb") as previous_file:
             data = previous_file.read(MAX_STATUS_BYTES + 1)
@@ -284,23 +284,39 @@ def preserve_verified_uploads(path, status):
     except (OSError, KeyError, TypeError, ValueError, RecursionError):
         return
 
-    for prefix, entry in status["report"].items():
-        old = previous["report"].get(prefix)
+    carried = previous.get("carriedUploads", {})
+    if not isinstance(carried, dict):
+        carried = {}
+    previous_uploads = {**carried, **previous["report"]}
+    carry_forward = {}
+    for prefix, old in previous_uploads.items():
+        entry = status["report"].get(prefix)
         if (
-            entry["uploaded"] != 0 or not isinstance(old, dict) or old.get("complete") is not True
+            (entry is not None and entry["uploaded"] != 0)
+            or (entry is None and status["ok"])
+            or not isinstance(old, dict) or old.get("complete") is not True
             or type(old.get("uploaded")) is not int or old["uploaded"] < 0
         ):
             continue
         verified = old.get("verifiedAt")
-        if "verifiedAt" not in old and old["uploaded"] > 0:
+        if "verifiedAt" not in old and old["uploaded"] > 0 and prefix in previous["report"]:
             verified = previous["at"]
         try:
             verified_at = status_timestamp(verified)
             archive_at = status_timestamp(old["archiveAt"])
-            if archive_at <= verified_at <= previous_at:
-                entry.update(archiveAt=old["archiveAt"], complete=True, verifiedAt=verified)
         except (KeyError, TypeError, ValueError):
             continue
+        if not archive_at <= verified_at <= previous_at:
+            continue
+        receipt = {"archiveAt": old["archiveAt"], "complete": True, "verifiedAt": verified}
+        if entry is None:
+            # The current run did not report this store. Keep the receipt outside the active
+            # report so the reader cannot interpret a failed copy as a successful no-op.
+            carry_forward[prefix] = {"uploaded": 0, **receipt}
+        else:
+            entry.update(receipt)
+    if carry_forward:
+        status["carriedUploads"] = carry_forward
 
 
 def write_status_file(path, status):
