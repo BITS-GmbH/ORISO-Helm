@@ -12,10 +12,19 @@ trap cleanup EXIT
 
 docker run -d --name "${PG}" -e POSTGRES_USER=synapse -e POSTGRES_DB=synapse \
   -e POSTGRES_PASSWORD=fixture-database-only postgres:16-alpine >/dev/null
+# The image starts a temporary socket-only server while creating the fixture database.
+ready=false
 for _ in $(seq 1 60); do
-  docker exec "${PG}" pg_isready -U synapse -d synapse >/dev/null 2>&1 && break
+  if docker exec "${PG}" sh -c '
+    PGPASSWORD="$POSTGRES_PASSWORD" PGCONNECT_TIMEOUT=2 exec psql -h 127.0.0.1 \
+      -X -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT 1"
+  ' >/dev/null 2>&1; then
+    ready=true
+    break
+  fi
   sleep 1
 done
+[[ "${ready}" == true ]] || { echo "FAIL fixture PostgreSQL did not become ready"; exit 1; }
 export PSQL_CMD="docker exec -i ${PG} psql -X -v ON_ERROR_STOP=1 -At -U synapse -d synapse"
 q() { docker exec -i "${PG}" psql -X -v ON_ERROR_STOP=1 -At -U synapse -d synapse <<<"$1"; }
 
