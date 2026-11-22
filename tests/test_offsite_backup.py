@@ -1,7 +1,9 @@
 """Exercise the off-site copy, retention and freshness check against a fake sftp client."""
 
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -9,6 +11,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+
+from scripts import signoz_check_journal
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "offsite_backup.py"
@@ -117,18 +122,76 @@ class OffsiteBackupTest(unittest.TestCase):
         self.assertNotIn("r0", keep)
 
     def test_push_uploads_every_complete_run_with_a_receipt(self):
-        self.add_run("mariadb", self.now - timedelta(hours=1))
-        self.add_run("mongodb", self.now - timedelta(hours=1))
+        archive_at = self.now - timedelta(hours=1)
+        self.add_run("mariadb", archive_at)
+        self.add_run("mongodb", archive_at - timedelta(days=1))
+        self.add_run("mongodb", archive_at)
         report, problems = offsite.push(offsite.load_config(self.config_path), self.sftp(), self.now)
         self.assertEqual(problems, [])
         self.assertEqual(report["mariadb"]["uploaded"], 1)
+        self.assertEqual(report["mongodb"]["uploaded"], 2)
+        for entry in report.values():
+            self.assertEqual(entry["archiveAt"], archive_at.isoformat())
+            self.assertIs(entry["complete"], True)
         (run,) = self.remote("mariadb")
         files = sorted(p.name for p in (self.box / "oriso-dev" / "mariadb" / run).iterdir())
         self.assertEqual(files, ["SHA256SUMS", "dump.sql.gz.age"])
         # A second run uploads nothing and is idempotent.
         report, problems = offsite.push(offsite.load_config(self.config_path), self.sftp(), self.now)
         self.assertEqual((problems, report["mariadb"]["uploaded"]), ([], 0))
+        for entry in report.values():
+            self.assertNotIn("archiveAt", entry)
+            self.assertNotIn("complete", entry)
         self.assertEqual(len(self.remote("mariadb")), 1)
+
+    def test_verified_copy_updates_alert_evidence_until_the_next_check(self):
+        config = offsite.load_config(self.config_path)
+        sftp = self.sftp()
+        check_path, push_path = self.root / "check.json", self.root / "push.json"
+
+        def record(command, operation, when, path):
+            report, problems = operation(config, sftp, when)
+            offsite.write_status_file(path, {
+                "command": command, "at": when.isoformat(), "ok": not problems,
+                "report": report, "problems": problems,
+            })
+
+        for prefix in ("mariadb", "mongodb"):
+            self.add_run(prefix, self.now - timedelta(hours=1))
+        record("push", offsite.push, self.now, push_path)
+        record("check", offsite.check, self.now + timedelta(hours=5), check_path)
+
+        copy_time = self.now + timedelta(days=1)
+        between_jobs = copy_time + timedelta(hours=1, minutes=30)
+        stale = signoz_check_journal.read_backup_freshness(
+            check_path, push_path=push_path, now=between_jobs,
+        )
+        self.assertEqual(stale["stores"]["mariadb"]["reason"], "stale-archive")
+
+        run = self.add_run("mariadb", copy_time - timedelta(minutes=30))
+        record("push", offsite.push, copy_time, push_path)
+        fresh = signoz_check_journal.read_backup_freshness(
+            check_path, push_path=push_path, now=between_jobs,
+        )
+        self.assertEqual(fresh["stores"]["mariadb"]["reason"], "fresh-archive")
+        self.assertEqual(fresh["stores"]["mongodb"]["reason"], "stale-archive")
+
+        (self.box / "oriso-dev" / "mariadb" / run.name / "SHA256SUMS").unlink()
+        check_time = copy_time + timedelta(hours=5)
+        record("check", offsite.check, check_time, check_path)
+        after_check = signoz_check_journal.read_backup_freshness(
+            check_path, push_path=push_path, now=check_time,
+        )
+        self.assertEqual(after_check["probe"]["reason"], "probe-failed")
+        self.assertEqual(after_check["stores"]["mariadb"]["reason"], "incomplete-archive")
+
+    def test_push_does_not_publish_evidence_for_a_future_archive(self):
+        self.add_run("mariadb", self.now + timedelta(hours=1))
+        report, problems = offsite.push(offsite.load_config(self.config_path), self.sftp(), self.now)
+        self.assertEqual(problems, [])
+        self.assertEqual(report["mariadb"]["uploaded"], 1)
+        self.assertNotIn("archiveAt", report["mariadb"])
+        self.assertNotIn("complete", report["mariadb"])
 
     def test_a_short_upload_is_not_published(self):
         self.add_run("mariadb", self.now - timedelta(hours=1), b"x" * 100)
@@ -224,17 +287,103 @@ class OffsiteBackupTest(unittest.TestCase):
         self.assertEqual({s["prefix"] for s in config["sources"]}, {"mariadb", "mongodb", "matrix-postgres"})
         self.assertEqual(config["storageBox"]["port"], 23)
 
-    def test_check_reports_stale_missing_and_incomplete_runs(self):
+    def test_check_reports_typed_evidence_for_fresh_and_stale_archives(self):
         config = offsite.load_config(self.config_path)
         newest, problems = offsite.check(config, self.sftp(), self.now)
+        self.assertEqual(newest, {})
         self.assertEqual(len(problems), 2)
-        self.add_run("mariadb", self.now - timedelta(hours=2))
-        self.add_run("mongodb", self.now - timedelta(hours=60))
+        fresh_at = self.now - timedelta(hours=2)
+        stale_at = self.now - timedelta(hours=60)
+        fresh = self.add_run("mariadb", fresh_at)
+        stale = self.add_run("mongodb", stale_at)
         offsite.push(config, self.sftp(), self.now)
         newest, problems = offsite.check(config, self.sftp(), self.now)
-        self.assertEqual(list(newest), ["mariadb", "mongodb"])
+        self.assertEqual(newest, {
+            "mariadb": {"run": fresh.name, "ageHours": 2.0,
+                        "archiveAt": fresh_at.isoformat(), "complete": True},
+            "mongodb": {"run": stale.name, "ageHours": 60.0,
+                        "archiveAt": stale_at.isoformat(), "complete": True},
+        })
         self.assertEqual(len(problems), 1)
         self.assertIn("mongodb", problems[0])
+
+    def test_check_ignores_invalid_calendar_cross_prefix_and_future_runs(self):
+        config = offsite.load_config(self.config_path)
+        valid_at = self.now - timedelta(hours=2)
+        valid = self.add_run("mariadb", valid_at)
+        offsite.push(config, self.sftp(), self.now)
+        target = self.box / "oriso-dev" / "mariadb"
+        accepted = target / valid.name
+        invalid_names = (
+            f"mariadb-{stamp(self.now + timedelta(seconds=1))}",
+            f"mongodb-{stamp(self.now - timedelta(hours=1))}",
+            "mariadb-20261131T030000Z",
+        )
+        for name in invalid_names:
+            run = target / name
+            run.mkdir()
+            for file in accepted.iterdir():
+                (run / file.name).write_bytes(file.read_bytes())
+
+        newest, problems = offsite.check(config, self.sftp(), self.now)
+        self.assertEqual(newest["mariadb"]["run"], valid.name)
+        self.assertEqual(problems, ["mongodb: no off-site run"])
+        self.assertNotIn("mongodb", newest)
+
+        for file in accepted.iterdir():
+            file.unlink()
+        accepted.rmdir()
+        newest, problems = offsite.check(config, self.sftp(), self.now)
+        self.assertEqual(newest, {})
+        self.assertEqual(problems, ["mariadb: no off-site run", "mongodb: no off-site run"])
+
+    def test_check_marks_newest_archive_incomplete_without_falling_back(self):
+        config = offsite.load_config(self.config_path)
+        fresh_at = self.now - timedelta(hours=2)
+        self.add_run("mariadb", self.now - timedelta(hours=3))
+        fresh = self.add_run("mariadb", fresh_at)
+        self.add_run("mongodb", fresh_at)
+        offsite.push(config, self.sftp(), self.now)
+        target = self.box / "oriso-dev" / "mariadb" / fresh.name
+        receipt = target / "SHA256SUMS"
+        ciphertext = target / "dump.sql.gz.age"
+        receipt_data = receipt.read_bytes()
+        ciphertext_data = ciphertext.read_bytes()
+        for problem in ("missing receipt", "empty receipt", "missing archive", "empty archive"):
+            with self.subTest(problem=problem):
+                receipt.write_bytes(receipt_data)
+                ciphertext.write_bytes(ciphertext_data)
+                file = receipt if "receipt" in problem else ciphertext
+                if problem.startswith("missing"):
+                    file.unlink()
+                else:
+                    file.write_bytes(b"")
+                newest, problems = offsite.check(config, self.sftp(), self.now)
+                self.assertEqual(newest["mariadb"], {
+                    "run": fresh.name, "ageHours": 2.0,
+                    "archiveAt": fresh_at.isoformat(), "complete": False,
+                })
+                self.assertTrue(newest["mongodb"]["complete"])
+                self.assertEqual(problems, [f"mariadb: newest off-site run {fresh.name} is incomplete"])
+
+    def test_check_timeout_suppresses_ssh_arguments_in_status(self):
+        status = self.root / "status.json"
+        timeout = subprocess.TimeoutExpired(["sftp", "-i", "/private/synthetic-identity"], 12)
+        with patch.object(offsite, "check", side_effect=timeout), redirect_stdout(io.StringIO()) as output:
+            result = offsite.main(["check", "--config", str(self.config_path), "--status-file", str(status)])
+        self.assertEqual(result, 1)
+        self.assertNotIn("/private/synthetic-identity", output.getvalue())
+        self.assertNotIn("/private/synthetic-identity", status.read_text())
+        self.assertFalse(json.loads(status.read_text())["ok"])
+
+    def test_failed_status_replace_preserves_last_complete_status(self):
+        status = self.root / "status.json"
+        status.write_text('{"ok":true}')
+        with patch.object(Path, "replace", side_effect=OSError("synthetic replacement failure")):
+            with self.assertRaises(OSError):
+                offsite.write_status_file(status, {"ok": False})
+        self.assertEqual(status.read_text(), '{"ok":true}')
+        self.assertEqual(list(self.root.glob(".status.json.*")), [])
 
     def test_cli_writes_a_status_file_and_the_exit_code_follows_it(self):
         env = {**os.environ, "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",

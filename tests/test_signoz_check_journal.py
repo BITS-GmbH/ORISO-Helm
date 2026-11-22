@@ -1,5 +1,11 @@
 """Exercise completion, failure detail and cursor handling at the reader boundary."""
 
+from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
+from io import StringIO
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -11,6 +17,8 @@ INVOCATION = "b" * 32
 MACHINE = "d" * 32
 UPTIME = "oriso-signoz-uptime.service"
 HEARTBEAT = "oriso-signoz-heartbeat-check.service"
+PUSH = "oriso-offsite-backup.service"
+CHECK = "oriso-offsite-check.service"
 
 
 def event(message, **fields):
@@ -137,3 +145,184 @@ class CheckCadenceTest(TestCase):
             ):
                 result = reader.check_cadence(UPTIME)
                 self.assertEqual((result["state"], result["reason"]), expected)
+
+
+class BackupJournalTest(TestCase):
+    def test_backup_scope_keeps_only_attributable_backups_and_tracks_recovery(self):
+        push = event(
+            reader.JOB_FAILED, UNIT=PUSH, JOB_RESULT="failed",
+            __CURSOR="push-failure", __REALTIME_TIMESTAMP="5000000",
+        )
+        recovered = event(
+            reader.JOB_DONE, UNIT=CHECK, JOB_RESULT="done", INVOCATION_ID="c" * 32,
+            __CURSOR="check-recovered", __REALTIME_TIMESTAMP="6000000",
+        )
+        failed = event(reader.UNIT_FAILED, UNIT=PUSH, UNIT_RESULT="exit-code")
+        exited = event(reader.PROCESS_EXIT, UNIT=PUSH, EXIT_CODE="exited", EXIT_STATUS="1")
+        foreign = event(reader.UNIT_SUCCEEDED, UNIT=CHECK, _PID="2", INVOCATION_ID="c" * 32)
+        success = event(reader.UNIT_SUCCEEDED, UNIT=CHECK, INVOCATION_ID="c" * 32)
+        with patch.object(reader, "read_journal", side_effect=[
+            ([push, recovered], False), ([failed, exited, foreign, success], False),
+        ]) as journal:
+            page = reader.read_page(since="10 minutes ago", scope="offsite-backup")
+
+        self.assertEqual(
+            [(row["unit"], row["state"]) for row in page["completed"]],
+            [(PUSH, "CRITICAL"), (CHECK, "OK")],
+        )
+        self.assertEqual(page["next_cursor"], "check-recovered")
+        for call in journal.call_args_list:
+            matches = call.args[1]
+            self.assertIn("_PID=1", matches)
+            self.assertIn(f"UNIT={PUSH}", matches)
+            self.assertIn(f"UNIT={CHECK}", matches)
+            self.assertNotIn(f"UNIT={UPTIME}", matches)
+
+    def test_backup_timeout_and_failed_start_do_not_fake_probe_failure(self):
+        completion = event(reader.JOB_FAILED, UNIT=CHECK, JOB_RESULT="failed")
+        timeout = event(reader.UNIT_FAILED, UNIT=CHECK, UNIT_RESULT="timeout")
+        failed = event(reader.UNIT_FAILED, UNIT=CHECK, UNIT_RESULT="exit-code")
+        missing_command = event(reader.PROCESS_EXIT, UNIT=CHECK, EXIT_CODE="exited", EXIT_STATUS="203")
+        self.assertEqual(reader.classify(completion, [timeout]), ("UNKNOWN", "timeout", None))
+        self.assertEqual(reader.classify(completion, [failed, missing_command]), ("UNKNOWN", "exit-code", 203))
+
+    def test_cli_adds_freshness_only_for_explicit_backup_scope(self):
+        page = {"completed": [], "next_cursor": "last", "more": False}
+        for arguments, scope in (([], "signoz"), (["--scope", "offsite-backup"], "offsite-backup")):
+            with (
+                self.subTest(scope=scope),
+                patch.object(reader.sys, "argv", ["monitor", *arguments, "--cursor", "last"]),
+                patch.object(reader, "read_page", side_effect=lambda **_: page.copy()) as journal,
+                patch.object(reader, "read_backup_freshness", return_value={"example": True}) as freshness,
+                redirect_stdout(StringIO()) as output,
+            ):
+                self.assertEqual(reader.main(), 0)
+            journal.assert_called_once_with(since=None, cursor="last", scope=scope)
+            expected = dict(page, freshness={"example": True}) if arguments else page
+            self.assertEqual(json.loads(output.getvalue()), expected)
+            self.assertEqual(freshness.call_count, bool(arguments))
+
+
+class BackupFreshnessTest(TestCase):
+    now = datetime(2026, 11, 22, 12, tzinfo=timezone.utc)
+
+    def snapshot(self, data, push=None):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "check.json"
+            push_path = Path(directory) / "push.json"
+            if data is not None:
+                path.write_text(json.dumps(data), encoding="utf-8")
+            if push is not None:
+                push_path.write_text(json.dumps(push), encoding="utf-8")
+            return reader.read_backup_freshness(path=path, push_path=push_path, now=self.now)
+
+    def producer_status(self, **fields):
+        return {
+            "command": "check", "at": self.now.isoformat(), "ok": True,
+            "report": {}, **fields,
+        }
+
+    def test_archive_cutoff_is_inclusive_and_output_does_not_leak_producer_details(self):
+        cutoff = self.now - timedelta(hours=26)
+        sample = self.snapshot(self.producer_status(
+            ok=False,
+            report={
+                "mariadb": {"archiveAt": cutoff.isoformat(), "complete": True, "detail": "private"},
+                "mongodb": {
+                    "archiveAt": (cutoff - timedelta(microseconds=1)).isoformat(), "complete": True,
+                },
+                "matrix-postgres": {"archiveAt": cutoff.isoformat(), "complete": False},
+                "other": {"archiveAt": cutoff.isoformat(), "complete": True},
+            },
+            problems=["private"],
+        ))
+        self.assertEqual(sample["probe"], {
+            "state": "CRITICAL", "reason": "probe-failed", "checked_at": self.now.isoformat(),
+        })
+        self.assertEqual(sample["stores"], {
+            "mariadb": {"state": "OK", "reason": "fresh-archive", "archive_at": cutoff.isoformat()},
+            "mongodb": {"state": "CRITICAL", "reason": "stale-archive",
+                        "archive_at": (cutoff - timedelta(microseconds=1)).isoformat()},
+            "matrix-postgres": {"state": "CRITICAL", "reason": "incomplete-archive",
+                                "archive_at": cutoff.isoformat()},
+        })
+        self.assertNotIn("private", json.dumps(sample))
+
+    def test_untyped_future_failed_or_absent_status_never_certifies_a_backup(self):
+        data = self.producer_status(
+            ok=False,
+            report={
+                "mariadb": {"run": "old-release", "ageHours": 1},
+                "mongodb": {"archiveAt": (self.now + timedelta(seconds=1)).isoformat(), "complete": True},
+            },
+        )
+        sample = self.snapshot(data)
+        self.assertEqual(sample["probe"]["state"], "CRITICAL")
+        self.assertEqual(
+            {key: value["state"] for key, value in sample["stores"].items()},
+            {"mariadb": "UNKNOWN", "mongodb": "UNKNOWN", "matrix-postgres": "UNKNOWN"},
+        )
+        for payload in (
+            None,
+            self.producer_status(at="2026-11-22T13:00:00+01:00"),
+            self.producer_status(at=(self.now + timedelta(seconds=1)).isoformat()),
+            self.producer_status(at=(self.now - timedelta(hours=26, seconds=1)).isoformat()),
+            self.producer_status(command="push"),
+        ):
+            with self.subTest(payload=payload):
+                sample = self.snapshot(payload)
+                self.assertNotEqual(sample["probe"]["state"], "OK")
+                self.assertTrue(all(row["state"] != "OK" for row in sample["stores"].values()))
+
+    def test_verified_new_push_covers_gap_before_morning_check(self):
+        now = datetime(2026, 11, 22, 6, tzinfo=timezone.utc)
+        self.now = now
+        old_archive = datetime(2026, 11, 21, 2, tzinfo=timezone.utc).isoformat()
+        new_archive = datetime(2026, 11, 22, 2, tzinfo=timezone.utc).isoformat()
+        last_check = datetime(2026, 11, 21, 8, tzinfo=timezone.utc).isoformat()
+        latest = {"archiveAt": new_archive, "complete": True, "uploaded": 1}
+        check = self.producer_status(
+            at=last_check,
+            report={
+                "mariadb": {"archiveAt": old_archive, "complete": True},
+                "mongodb": {"archiveAt": old_archive, "complete": True},
+                "matrix-postgres": {"archiveAt": old_archive, "complete": True},
+            },
+        )
+        push = self.producer_status(
+            command="push", at="2026-11-22T03:00:00+00:00",
+            report={
+                "mariadb": latest,
+                "mongodb": dict(latest, uploaded=0),
+                "matrix-postgres": dict(latest, archiveAt="2026-11-22T03:00:01Z"),
+            },
+        )
+        sample = self.snapshot(check, push)
+        self.assertEqual(sample["probe"]["checked_at"], last_check)
+        self.assertEqual(sample["stores"]["mariadb"], {
+            "state": "OK", "reason": "fresh-archive", "archive_at": new_archive,
+        })
+        self.assertEqual(sample["stores"]["mongodb"]["reason"], "stale-archive")
+        self.assertEqual(sample["stores"]["matrix-postgres"]["reason"], "stale-archive")
+
+        subsequent = self.producer_status(
+            at="2026-11-22T05:00:00+00:00", ok=False,
+            report={"mongodb": {"archiveAt": new_archive, "complete": False}},
+        )
+        sample = self.snapshot(subsequent, push)
+        self.assertEqual(sample["probe"]["state"], "CRITICAL")
+        self.assertEqual(sample["stores"]["mariadb"]["state"], "UNKNOWN")
+        self.assertEqual(sample["stores"]["mongodb"]["state"], "CRITICAL")
+        self.assertTrue(all(row["state"] == "UNKNOWN" for row in self.snapshot(None, push)["stores"].values()))
+
+    def test_duplicate_or_oversized_status_is_unknown(self):
+        valid = json.dumps(self.producer_status())
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "check.json"
+            push_path = Path(directory) / "push.json"
+            for data in (valid[:-1] + ', "ok": false}', valid + " " * (16 * 1024)):
+                with self.subTest(size=len(data)):
+                    path.write_text(data, encoding="utf-8")
+                    result = reader.read_backup_freshness(path, push_path=push_path, now=self.now)
+                    self.assertEqual(result["probe"]["reason"], "invalid-probe")
+                    self.assertTrue(all(row["state"] == "UNKNOWN" for row in result["stores"].values()))

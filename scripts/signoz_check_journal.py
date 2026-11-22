@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read completed external Dev SigNoz checks from the systemd manager journal."""
+"""Read completed Dev monitoring checks from the systemd manager journal."""
 
 import argparse
 from datetime import datetime, timedelta, timezone
@@ -14,6 +14,16 @@ import time
 
 UPTIME = "oriso-signoz-uptime.service"
 HEARTBEAT = "oriso-signoz-heartbeat-check.service"
+BACKUP_PUSH = "oriso-offsite-backup.service"
+BACKUP_CHECK = "oriso-offsite-check.service"
+BACKUP_STORES = ("mariadb", "mongodb", "matrix-postgres")
+BACKUP_CHECK_STATUS = Path("/var/lib/oriso-offsite-backup/check.json")
+BACKUP_PUSH_STATUS = Path("/var/lib/oriso-offsite-backup/push.json")
+MAX_BACKUP_STATUS_BYTES = 16 * 1024
+MAX_BACKUP_AGE = timedelta(hours=26)
+UTC_ISO = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|\+00:00)"
+)
 JOB_DONE = "39f53479d3a045ac8e11786248231fbf"
 JOB_FAILED = "be02cf6855d2428ba40df7e9d022f03d"
 UNIT_SUCCEEDED = "7ad2d189f7e94e70a38c781354912448"
@@ -22,11 +32,17 @@ PROCESS_EXIT = "98e322203f7a4ed290d09fe03c09fe15"
 PAGE_SIZE = 24
 MAX_COMPLETION_AGE_SECONDS = 180
 UNIT_MATCHES = ("_PID=1", f"UNIT={UPTIME}", f"UNIT={HEARTBEAT}")
+SCOPE_MATCHES = {
+    "signoz": UNIT_MATCHES,
+    "offsite-backup": ("_PID=1", f"UNIT={BACKUP_PUSH}", f"UNIT={BACKUP_CHECK}"),
+}
 CADENCE_UNITS = {"uptime": UPTIME, "heartbeat": HEARTBEAT}
 CADENCE_EXIT = {"OK": 0, "CRITICAL": 2, "UNKNOWN": 3}
 PLUGIN_STATES = {
     UPTIME: {1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"},
     HEARTBEAT: {2: "CRITICAL"},
+    BACKUP_PUSH: {1: "CRITICAL"},
+    BACKUP_CHECK: {1: "CRITICAL"},
 }
 JOURNAL_FIELDS = (
     "UNIT,_PID,_MACHINE_ID,INVOCATION_ID,JOB_TYPE,JOB_RESULT,MESSAGE_ID,"
@@ -71,7 +87,7 @@ def classify(completion, details):
         len(exits) == 1 and exits[0]["EXIT_CODE"] == "exited" and exits[0]["EXIT_STATUS"] == "0"
     )
     if completion["JOB_RESULT"] == "done" and len(successes) == 1 and not failures and clean_exit:
-        # These two oneshots use the default successful exit status of zero.
+        # These oneshots use the default successful exit status of zero.
         return "OK", "success", 0
     result = failures[0]["UNIT_RESULT"] if len(failures) == 1 else None
     status = None
@@ -88,11 +104,11 @@ def invocation_ids(rows):
     return sorted(value for value in values if isinstance(value, str) and re.fullmatch("[0-9a-f]{32}", value))
 
 
-def completion_details(ids, *, options=(), limit=PAGE_SIZE * 4):
+def completion_details(ids, *, options=(), limit=PAGE_SIZE * 4, unit_matches=UNIT_MATCHES):
     if not ids:
         return []
     details, extra = read_journal(options, (
-        *UNIT_MATCHES, *(f"INVOCATION_ID={value}" for value in ids),
+        *unit_matches, *(f"INVOCATION_ID={value}" for value in ids),
         f"MESSAGE_ID={UNIT_SUCCEEDED}", f"MESSAGE_ID={UNIT_FAILED}", f"MESSAGE_ID={PROCESS_EXIT}",
     ), limit)
     if extra:
@@ -100,9 +116,10 @@ def completion_details(ids, *, options=(), limit=PAGE_SIZE * 4):
     return details
 
 
-def read_page(*, cursor=None, since=None):
+def read_page(*, cursor=None, since=None, scope="signoz"):
+    unit_matches = SCOPE_MATCHES[scope]
     options = [f"--cursor={cursor}"] if cursor is not None else [f"--since={since}"]
-    match = (*UNIT_MATCHES, "JOB_TYPE=start", f"MESSAGE_ID={JOB_DONE}", f"MESSAGE_ID={JOB_FAILED}")
+    match = (*unit_matches, "JOB_TYPE=start", f"MESSAGE_ID={JOB_DONE}", f"MESSAGE_ID={JOB_FAILED}")
     rows, more = read_journal(options, match, PAGE_SIZE + int(cursor is not None))
     if cursor is not None:
         if not rows or rows[0]["__CURSOR"] != cursor:
@@ -110,10 +127,12 @@ def read_page(*, cursor=None, since=None):
         rows = rows[1:]
 
     ids = invocation_ids(rows)
-    details = completion_details(ids)
+    details = completion_details(ids, unit_matches=unit_matches)
 
     completed = []
     for row in rows:
+        if row.get("_PID") != "1" or f"UNIT={row.get('UNIT')}" not in unit_matches:
+            raise ValueError("unexpected systemd completion record")
         identity = row.get("INVOCATION_ID")
         state, result, status = classify(row, details) if identity in ids else ("UNKNOWN", None, None)
         timestamp = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(
@@ -127,6 +146,109 @@ def read_page(*, cursor=None, since=None):
             "cursor": row["__CURSOR"],
         })
     return {"completed": completed, "next_cursor": rows[-1]["__CURSOR"] if rows else cursor, "more": more}
+
+
+def utc_timestamp(value):
+    if not isinstance(value, str) or not UTC_ISO.fullmatch(value):
+        raise ValueError("expected UTC ISO timestamp")
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def unique_object(fields):
+    result = dict(fields)
+    if len(result) != len(fields):
+        raise ValueError("duplicate status fields")
+    return result
+
+
+def read_backup_status(path, command, now):
+    with path.open("rb") as file:
+        data = file.read(MAX_BACKUP_STATUS_BYTES + 1)
+    if len(data) > MAX_BACKUP_STATUS_BYTES:
+        raise ValueError("backup status exceeds size limit")
+    status = json.loads(data.decode("utf-8"), object_pairs_hook=unique_object)
+    if (
+        not isinstance(status, dict) or status.get("command") != command
+        or type(status.get("ok")) is not bool or not isinstance(status.get("report"), dict)
+    ):
+        raise ValueError("invalid backup status shape")
+    timestamp = utc_timestamp(status.get("at"))
+    if timestamp > now:
+        raise ValueError("future backup status")
+    return timestamp, status["ok"], status["report"]
+
+
+def read_archive(report, store, observed_at):
+    archive = report.get(store)
+    if not isinstance(archive, dict) or type(archive.get("complete")) is not bool:
+        return None, None
+    try:
+        timestamp = utc_timestamp(archive.get("archiveAt"))
+    except ValueError:
+        return None, None
+    if timestamp > observed_at:
+        return None, None
+    return timestamp, archive["complete"]
+
+
+def read_backup_freshness(path=BACKUP_CHECK_STATUS, *, push_path=BACKUP_PUSH_STATUS, now=None):
+    now = now or datetime.now(timezone.utc)
+    checked_at, probe_state, probe_reason, check_report = None, "UNKNOWN", "invalid-probe", {}
+    try:
+        checked_at, ok, check_report = read_backup_status(path, "check", now)
+    except FileNotFoundError:
+        probe_reason = "missing-probe"
+    except (OSError, ValueError, RecursionError):
+        pass
+    else:
+        if now - checked_at > MAX_BACKUP_AGE:
+            probe_state, probe_reason = "CRITICAL", "stale-probe"
+        elif ok:
+            probe_state, probe_reason = "OK", "fresh-probe"
+        else:
+            probe_state, probe_reason = "CRITICAL", "probe-failed"
+
+    probe = {
+        "state": probe_state, "reason": probe_reason,
+        "checked_at": checked_at.isoformat() if checked_at else None,
+    }
+    stores = {
+        store: {"state": "UNKNOWN", "reason": "unverified-archive", "archive_at": None}
+        for store in BACKUP_STORES
+    }
+    if probe_reason in {"missing-probe", "invalid-probe", "stale-probe"}:
+        return {"probe": probe, "stores": stores}
+
+    pushed_at, push_report = None, {}
+    try:
+        pushed_at, _, report = read_backup_status(push_path, "push", now)
+        if pushed_at > checked_at:
+            push_report = report
+    except (OSError, ValueError, RecursionError):
+        pass
+
+    for store in BACKUP_STORES:
+        archive_at, complete = read_archive(check_report, store, checked_at)
+        push_entry = push_report.get(store)
+        if (
+            pushed_at is not None and isinstance(push_entry, dict)
+            and type(push_entry.get("uploaded")) is int and push_entry["uploaded"] > 0
+        ):
+            pushed_archive_at, pushed_complete = read_archive(push_report, store, pushed_at)
+            if pushed_complete and (archive_at is None or pushed_archive_at > archive_at):
+                archive_at, complete = pushed_archive_at, True
+
+        if complete is False:
+            state, reason = "CRITICAL", "incomplete-archive"
+        elif complete and now - archive_at > MAX_BACKUP_AGE:
+            state, reason = "CRITICAL", "stale-archive"
+        elif complete:
+            state, reason = "OK", "fresh-archive"
+        else:
+            continue
+        stores[store] = {"state": state, "reason": reason, "archive_at": archive_at.isoformat()}
+
+    return {"probe": probe, "stores": stores}
 
 
 def timer_state(timer):
@@ -180,20 +302,25 @@ def check_cadence(unit):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scope", choices=SCOPE_MATCHES, default="signoz", help="which manager units to read")
     start = parser.add_mutually_exclusive_group(required=True)
     start.add_argument("--since", help="Journal start time for the first page")
     start.add_argument("--cursor", help="Last completion cursor accepted by the consumer")
     start.add_argument("--check-cadence", choices=CADENCE_UNITS, help="Check a running timer and its latest completion")
     args = parser.parse_args()
     if args.check_cadence:
+        if args.scope != "signoz":
+            parser.error("--check-cadence is only supported for the signoz scope")
         result = check_cadence(CADENCE_UNITS[args.check_cadence])
         print(json.dumps(result, sort_keys=True))
         return CADENCE_EXIT[result["state"]]
     try:
-        page = read_page(since=args.since, cursor=args.cursor)
+        page = read_page(since=args.since, cursor=args.cursor, scope=args.scope)
     except (KeyError, OSError, TypeError, ValueError) as error:
         print(f"Cannot read SigNoz check completions: {error}", file=sys.stderr)
         return 3
+    if args.scope == "offsite-backup":
+        page["freshness"] = read_backup_freshness()
     print(json.dumps(page, sort_keys=True))
     return 0
 

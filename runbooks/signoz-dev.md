@@ -371,6 +371,10 @@ operator can investigate a journal gap. Treat missing or stale results as
 monitoring failures. A successful read with an empty page provides no
 health result.
 
+The [off-site backup monitoring scope](offsite-backup.md#monitor-the-backup-jobs)
+uses its own cursor for the two backup units and includes a sanitized archive
+freshness snapshot on every poll.
+
 #### Watch the check runner from another host
 
 Install the same journal reader on the check runner. From the independent
