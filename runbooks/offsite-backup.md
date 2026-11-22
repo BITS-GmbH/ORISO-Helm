@@ -113,8 +113,9 @@ evidence stays `UNKNOWN`. The verification service still uses its configured
 36-hour default.
 
 A verified upload after the last check can refresh archive evidence before the
-next daily verification. A copy that transfers zero archives leaves freshness
-as it was. A newer verification can supersede earlier upload evidence.
+next daily verification. When a copy uploads nothing for a store, its receipt
+retains that store's last verified upload and its original verification time.
+A newer verification supersedes the earlier upload evidence.
 
 Before enabling incident delivery, verify the restricted read command,
 cursor replay, a simulated job failure, a stale archive and one recovery

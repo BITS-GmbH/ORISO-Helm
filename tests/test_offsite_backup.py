@@ -176,6 +176,14 @@ class OffsiteBackupTest(unittest.TestCase):
         self.assertEqual(fresh["stores"]["mariadb"]["reason"], "fresh-archive")
         self.assertEqual(fresh["stores"]["mongodb"]["reason"], "stale-archive")
 
+        record("push", offsite.push, copy_time + timedelta(hours=1), push_path)
+        no_op = json.loads(push_path.read_text())
+        self.assertEqual(no_op["report"]["mariadb"]["uploaded"], 0)
+        after_no_op = signoz_check_journal.read_backup_freshness(
+            check_path, push_path=push_path, now=between_jobs,
+        )
+        self.assertEqual(after_no_op, fresh)
+
         (self.box / "oriso-dev" / "mariadb" / run.name / "SHA256SUMS").unlink()
         check_time = copy_time + timedelta(hours=5)
         record("check", offsite.check, check_time, check_path)
@@ -184,6 +192,35 @@ class OffsiteBackupTest(unittest.TestCase):
         )
         self.assertEqual(after_check["probe"]["reason"], "probe-failed")
         self.assertEqual(after_check["stores"]["mariadb"]["reason"], "incomplete-archive")
+
+        # Another no-op must not give the older upload a newer verification time.
+        after_check_no_op = check_time + timedelta(hours=1)
+        record("push", offsite.push, after_check_no_op, push_path)
+        self.assertEqual(
+            signoz_check_journal.read_backup_freshness(
+                check_path, push_path=push_path, now=after_check_no_op,
+            )["stores"]["mariadb"],
+            after_check["stores"]["mariadb"],
+        )
+        carried = json.loads(push_path.read_text())["report"]["mariadb"]
+        self.assertEqual(carried["verifiedAt"], copy_time.isoformat())
+
+    def test_no_op_does_not_turn_an_invalid_timestamp_into_verified_evidence(self):
+        path = self.root / "push.json"
+        old = {
+            "command": "push", "at": self.now.isoformat(), "ok": True,
+            "report": {"mariadb": {
+                "uploaded": 1, "archiveAt": (self.now - timedelta(hours=1)).isoformat(sep=" "),
+                "complete": True,
+            }},
+        }
+        path.write_text(json.dumps(old))
+        current = {
+            "command": "push", "at": (self.now + timedelta(hours=1)).isoformat(), "ok": True,
+            "report": {"mariadb": {"uploaded": 0}},
+        }
+        offsite.write_status_file(path, current)
+        self.assertEqual(json.loads(path.read_text())["report"]["mariadb"], {"uploaded": 0})
 
     def test_push_does_not_publish_evidence_for_a_future_archive(self):
         self.add_run("mariadb", self.now + timedelta(hours=1))
@@ -340,10 +377,11 @@ class OffsiteBackupTest(unittest.TestCase):
     def test_check_marks_newest_archive_incomplete_without_falling_back(self):
         config = offsite.load_config(self.config_path)
         fresh_at = self.now - timedelta(hours=2)
-        self.add_run("mariadb", self.now - timedelta(hours=3))
+        older = self.add_run("mariadb", fresh_at - timedelta(days=1))
         fresh = self.add_run("mariadb", fresh_at)
         self.add_run("mongodb", fresh_at)
         offsite.push(config, self.sftp(), self.now)
+        self.assertCountEqual(self.remote("mariadb"), [older.name, fresh.name])
         target = self.box / "oriso-dev" / "mariadb" / fresh.name
         receipt = target / "SHA256SUMS"
         ciphertext = target / "dump.sql.gz.age"

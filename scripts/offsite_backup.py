@@ -22,6 +22,10 @@ SAFE_PATH = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/-]*$")
 LS_LONG = re.compile(r"^\S+\s+(?:\d+|\?)\s+\S+\s+\S+\s+(?P<size>\d+)\s+\w+\s+\d+\s+[\d:]+\s+(?P<name>.+)$")
 SFTP_TIMEOUT_SECONDS = 1800
 MAX_DELETIONS_PER_RUN = 60
+MAX_STATUS_BYTES = 16 * 1024
+UTC_ISO = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|\+00:00)"
+)
 RECEIPT = "SHA256SUMS"
 
 
@@ -249,7 +253,60 @@ def check(config, sftp, now=None):
     return newest, problems
 
 
+def unique_status_object(fields):
+    result = dict(fields)
+    if len(result) != len(fields):
+        raise ValueError("duplicate status fields")
+    return result
+
+
+def status_timestamp(value):
+    if not isinstance(value, str) or not UTC_ISO.fullmatch(value):
+        raise ValueError("expected UTC ISO timestamp")
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def preserve_verified_uploads(path, status):
+    """Keep the original verification time when a store has no new upload."""
+    try:
+        with path.open("rb") as previous_file:
+            data = previous_file.read(MAX_STATUS_BYTES + 1)
+        if len(data) > MAX_STATUS_BYTES:
+            return
+        previous = json.loads(data, object_pairs_hook=unique_status_object)
+        if (
+            previous["command"] != "push" or type(previous["ok"]) is not bool
+            or not isinstance(previous["report"], dict)
+        ):
+            return
+        previous_at = status_timestamp(previous["at"])
+        if previous_at > status_timestamp(status["at"]):
+            return
+    except (OSError, KeyError, TypeError, ValueError, RecursionError):
+        return
+
+    for prefix, entry in status["report"].items():
+        old = previous["report"].get(prefix)
+        if (
+            entry["uploaded"] != 0 or not isinstance(old, dict) or old.get("complete") is not True
+            or type(old.get("uploaded")) is not int or old["uploaded"] < 0
+        ):
+            continue
+        verified = old.get("verifiedAt")
+        if "verifiedAt" not in old and old["uploaded"] > 0:
+            verified = previous["at"]
+        try:
+            verified_at = status_timestamp(verified)
+            archive_at = status_timestamp(old["archiveAt"])
+            if archive_at <= verified_at <= previous_at:
+                entry.update(archiveAt=old["archiveAt"], complete=True, verifiedAt=verified)
+        except (KeyError, TypeError, ValueError):
+            continue
+
+
 def write_status_file(path, status):
+    if status.get("command") == "push":
+        preserve_verified_uploads(path, status)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = None
     try:

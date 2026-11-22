@@ -315,6 +315,24 @@ class BackupFreshnessTest(TestCase):
         self.assertEqual(sample["stores"]["mongodb"]["state"], "CRITICAL")
         self.assertTrue(all(row["state"] == "UNKNOWN" for row in self.snapshot(None, push)["stores"].values()))
 
+    def test_carried_upload_keeps_its_verification_time_and_cannot_override_a_later_check(self):
+        check = self.producer_status(at="2026-11-22T05:00:00Z")
+        push = self.producer_status(command="push", at="2026-11-22T06:00:00Z")
+        evidence = {
+            "archiveAt": "2026-11-22T02:00:00Z",
+            "complete": True,
+            "uploaded": 0,
+            "verifiedAt": "2026-11-22T03:00:00Z",
+        }
+        for verified in (evidence["verifiedAt"], "2026-11-22T06:00:01Z", "invalid"):
+            with self.subTest(verified=verified):
+                push["report"] = {"mariadb": dict(evidence, verifiedAt=verified)}
+                self.assertEqual(self.snapshot(check, push)["stores"]["mariadb"]["state"], "UNKNOWN")
+
+        earlier = dict(check, at="2026-11-22T02:30:00Z")
+        push["report"] = {"mariadb": evidence}
+        self.assertEqual(self.snapshot(earlier, push)["stores"]["mariadb"]["reason"], "fresh-archive")
+
     def test_duplicate_or_oversized_status_is_unknown(self):
         valid = json.dumps(self.producer_status())
         with TemporaryDirectory() as directory:

@@ -191,6 +191,25 @@ def read_archive(report, store, observed_at):
     return timestamp, archive["complete"]
 
 
+def read_verified_upload(report, store, pushed_at, checked_at):
+    entry = report.get(store)
+    if not isinstance(entry, dict) or type(entry.get("uploaded")) is not int or entry["uploaded"] < 0:
+        return None
+    try:
+        if "verifiedAt" in entry:
+            verified_at = utc_timestamp(entry["verifiedAt"])
+        elif entry["uploaded"] > 0:
+            verified_at = pushed_at
+        else:
+            return None
+    except ValueError:
+        return None
+    if not checked_at < verified_at <= pushed_at:
+        return None
+    archive_at, complete = read_archive(report, store, verified_at)
+    return archive_at if complete else None
+
+
 def read_backup_freshness(path=BACKUP_CHECK_STATUS, *, push_path=BACKUP_PUSH_STATUS, now=None):
     now = now or datetime.now(timezone.utc)
     checked_at, probe_state, probe_reason, check_report = None, "UNKNOWN", "invalid-probe", {}
@@ -229,14 +248,9 @@ def read_backup_freshness(path=BACKUP_CHECK_STATUS, *, push_path=BACKUP_PUSH_STA
 
     for store in BACKUP_STORES:
         archive_at, complete = read_archive(check_report, store, checked_at)
-        push_entry = push_report.get(store)
-        if (
-            pushed_at is not None and isinstance(push_entry, dict)
-            and type(push_entry.get("uploaded")) is int and push_entry["uploaded"] > 0
-        ):
-            pushed_archive_at, pushed_complete = read_archive(push_report, store, pushed_at)
-            if pushed_complete and (archive_at is None or pushed_archive_at > archive_at):
-                archive_at, complete = pushed_archive_at, True
+        pushed_archive_at = read_verified_upload(push_report, store, pushed_at, checked_at)
+        if pushed_archive_at is not None and (archive_at is None or pushed_archive_at > archive_at):
+            archive_at, complete = pushed_archive_at, True
 
         if complete is False:
             state, reason = "CRITICAL", "incomplete-archive"
