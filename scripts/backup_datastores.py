@@ -53,7 +53,7 @@ TARGETS = {
             ': "${POSTGRES_PASSWORD:?PostgreSQL credential is unavailable}"; '
             'export PGPASSWORD="$POSTGRES_PASSWORD"; '
             'exec pg_dump --host=localhost --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" '
-            "--no-owner --clean --if-exists"
+            "--no-owner --clean --if-exists --exclude-table-data=public.e2e_one_time_keys_json"
         ),
     },
 }

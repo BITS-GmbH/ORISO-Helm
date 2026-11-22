@@ -10,8 +10,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from render_signoz_dev_observability_test import by_key, render
+from scripts import offsite_restore_test as restore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +101,14 @@ class DatastoreBackupTest(unittest.TestCase):
         self.assertIn('PGPASSWORD="$POSTGRES_PASSWORD"', dump[-1])
         self.assertNotIn("secret", " ".join(dump).lower().replace("credential", ""))
 
+    def test_postgres_dump_excludes_only_synapse_one_time_key_data(self):
+        result = self.run_backup("matrix-postgres", "ok", "--age-recipients-file", str(self.recipients))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        dump = next(c for c in calls if c[6] == "exec")[-1]
+        exclusions = [argument for argument in dump.split() if argument.startswith("--exclude-table")]
+        self.assertEqual(exclusions, ["--exclude-table-data=public.e2e_one_time_keys_json"])
+
     def test_mongodb_password_is_not_a_command_line_argument(self):
         self.run_backup("mongodb", "ok", "--age-recipients-file", str(self.recipients))
         calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
@@ -154,6 +164,54 @@ class DatastoreBackupUnitsTest(unittest.TestCase):
             timer.read(ROOT / "runbooks" / "systemd" / f"oriso-{datastore}-backup.timer")
             self.assertRegex(timer["Timer"]["OnCalendar"], r"^\*-\*-\* 02:\d\d:00 UTC$")
             self.assertEqual(timer["Timer"]["Persistent"], "true")
+
+class PostgresRestoreTest(unittest.TestCase):
+    def test_restored_synapse_one_time_keys_are_cleared_before_reporting_evidence(self):
+        for archived_keys in (3, 0, None):
+            with self.subTest(archived_keys=archived_keys):
+                keys = archived_keys
+                queries = []
+
+                def query(*args, **kwargs):
+                    nonlocal keys
+                    sql = args[-1]
+                    queries.append(sql)
+                    if "to_regclass" in sql:
+                        return self.output("f" if keys is None else "t")
+                    if "TRUNCATE TABLE public.e2e_one_time_keys_json" in sql:
+                        self.assertIsNotNone(keys)
+                        keys = 0
+                    if "COUNT(*) FROM public.e2e_one_time_keys_json" in sql:
+                        return self.output(str(keys))
+                    if "information_schema.tables" in sql:
+                        return self.output("1" if keys is None else "2")
+                    if "FROM fixture_marker" in sql:
+                        return self.output("7")
+                    self.fail(f"Unexpected PostgreSQL command: {args}")
+
+                archive = Path("synapse.sql.gz.age")
+                identity = Path("synthetic-identity")
+                with (
+                    patch.object(restore, "docker", side_effect=query),
+                    patch.object(restore, "start"),
+                    patch.object(restore, "wait_until"),
+                    patch.object(restore.time, "sleep"),
+                    patch.object(restore, "pipe_into") as load,
+                ):
+                    evidence = restore.restore_postgres([archive], identity, "fixture_marker", "restore-fixture")
+                load.assert_called_once()
+                self.assertEqual(evidence["markerRows"], 7)
+                if archived_keys is None:
+                    self.assertNotIn("oneTimeKeyRows", evidence)
+                    self.assertFalse(any("TRUNCATE" in sql for sql in queries))
+                else:
+                    self.assertEqual(keys, 0)
+                    self.assertEqual(evidence.get("oneTimeKeyRows"), 0)
+
+    @staticmethod
+    def output(text):
+        return subprocess.CompletedProcess([], 0, stdout=text)
+
 
 if __name__ == "__main__":
     unittest.main()
