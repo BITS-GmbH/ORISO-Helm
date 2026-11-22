@@ -26,6 +26,11 @@ SYNAPSE_DEFAULTS = {
     "per_user": {"per_second": 0.003, "burst_count": 5},
     "per_issuer": {"per_second": 0.3, "burst_count": 10},
 }
+DEV_INVITE_LIMITS = {
+    "per_room": {"per_second": 1.0, "burst_count": 40},
+    "per_user": {"per_second": 0.1, "burst_count": 20},
+    "per_issuer": {"per_second": 1.0, "burst_count": 40},
+}
 HOLDING_ROOM_COUNSELLORS = 17
 # Synapse's shipped rc_message: also limits room creation and membership events per user
 # (ORISO-UserService#1737: the agency account's backfill invites used it up, so the next
@@ -68,12 +73,6 @@ def render_homeserver(*extra: str) -> dict:
             if isinstance(value, str) and "server_name:" in value and "rc_login" in value:
                 return yaml.safe_load(value)
     raise AssertionError("no Synapse homeserver config rendered")
-
-
-def dev_rate_limits() -> dict:
-    with open(os.path.join(CHART_DIR, "values-dev.yaml"), encoding="utf-8") as handle:
-        values = yaml.safe_load(handle)
-    return ((values.get("matrix") or {}).get("rateLimits")) or {}
 
 
 def main() -> int:
@@ -122,27 +121,21 @@ def main() -> int:
     }:
         failures.append(f"rc_login changed: {login}")
 
-    # Dev: one enquiry's holding-room backfill must fit the burst at once, and a
-    # counsellor invited into many new enquiries must not wait minutes per invite.
-    dev = dev_rate_limits()
-    per_room = (dev.get("invitesPerRoom") or {}).get("burstCount", 0)
-    per_issuer = (dev.get("invitesPerIssuer") or {}).get("burstCount", 0)
-    per_user_rate = (dev.get("invitesPerUser") or {}).get("perSecond", 0)
-    if per_room < 2 * HOLDING_ROOM_COUNSELLORS:
-        failures.append(f"Dev invitesPerRoom.burstCount {per_room} < {2 * HOLDING_ROOM_COUNSELLORS}")
-    if per_issuer < 2 * HOLDING_ROOM_COUNSELLORS:
-        failures.append(f"Dev invitesPerIssuer.burstCount {per_issuer} < {2 * HOLDING_ROOM_COUNSELLORS}")
-    if per_user_rate < 1 / 60:
-        failures.append(f"Dev invitesPerUser.perSecond {per_user_rate} allows less than one invite a minute")
+    # Check the effective Synapse config from the production chart template and
+    # the Dev overlay, including the recipient burst that can delay supervisors.
+    dev = render_homeserver("-f", os.path.join(CHART_DIR, "values-dev.yaml"))
+    actual_invites = dev.get("rc_invites")
+    if actual_invites != DEV_INVITE_LIMITS:
+        failures.append(f"Dev: expected rc_invites {DEV_INVITE_LIMITS}, got {actual_invites}")
 
-    messages = dev.get("messages") or {}
-    if messages.get("burstCount", 0) < 3 * HOLDING_ROOM_COUNSELLORS:
+    messages = dev.get("rc_message") or {}
+    if messages.get("burst_count", 0) < 3 * HOLDING_ROOM_COUNSELLORS:
         failures.append(
-            f"Dev messages.burstCount {messages.get('burstCount', 0)} < {3 * HOLDING_ROOM_COUNSELLORS}"
+            f"Dev rc_message.burst_count {messages.get('burst_count', 0)} < {3 * HOLDING_ROOM_COUNSELLORS}"
             " (agency account: room creation + backfill invites of consecutive enquiries)"
         )
-    if messages.get("perSecond", 0) < 1:
-        failures.append(f"Dev messages.perSecond {messages.get('perSecond', 0)} < 1")
+    if messages.get("per_second", 0) < 1:
+        failures.append(f"Dev rc_message.per_second {messages.get('per_second', 0)} < 1")
 
     if failures:
         print("\n".join(failures), file=sys.stderr)
