@@ -100,10 +100,11 @@ python3 scripts/signoz_check_journal.py --scope offsite-backup --cursor "$last_b
 ```
 
 The completion page follows the existing machine, boot, unit and invocation
-deduplication rules. A failed backup script is `CRITICAL`. A timeout, failed
-start or incomplete systemd evidence is `UNKNOWN`. A successful journal read
-can return an empty completion page. Evaluate its freshness snapshot on
-every poll.
+deduplication rules. A backup script exit status of 1 is `CRITICAL`. An invalid
+invocation can exit with status 2 and is `UNKNOWN`, as are timeouts, failed
+starts and incomplete systemd evidence. For `UNKNOWN`, inspect the unit
+invocation and journal first. A successful journal read can return an empty
+completion page. Evaluate its freshness snapshot on every poll.
 
 The snapshot reports the verification probe and each of `mariadb`, `mongodb`
 and `matrix-postgres` separately. The archive clock uses the newest known
@@ -113,9 +114,15 @@ evidence stays `UNKNOWN`. The verification service still uses its configured
 36-hour default.
 
 A verified upload after the last check can refresh archive evidence before the
-next daily verification. When a copy uploads nothing for a store, its receipt
-retains that store's last verified upload and its original verification time.
-A newer verification supersedes the earlier upload evidence.
+next daily verification. A copy with zero uploads for a store carries forward
+that store's verified upload and original verification time when the previous
+copy receipt contains them. A newer verification supersedes that upload evidence.
+
+A failed copy can omit a store from its receipt. A later copy with zero uploads
+then leaves the reader using the last verification, which may show a stale
+archive. After resolving the copy failure, start `oriso-offsite-check.service`
+on the approved backup host. Confirm that the new check receipt records a
+complete archive for the affected store and reevaluate the freshness snapshot.
 
 Before enabling incident delivery, verify the restricted read command,
 cursor replay, a simulated job failure, a stale archive and one recovery
