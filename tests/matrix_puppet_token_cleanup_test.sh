@@ -17,7 +17,7 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 export PSQL_CMD="docker exec -i ${PG} psql -X -v ON_ERROR_STOP=1 -At -U synapse -d synapse"
-q() { bash -c "${PSQL_CMD}" <<<"$1"; }
+q() { docker exec -i "${PG}" psql -X -v ON_ERROR_STOP=1 -At -U synapse -d synapse <<<"$1"; }
 
 now=$(( $(date +%s) * 1000 ))
 day=$((24 * 60 * 60 * 1000))
@@ -60,5 +60,44 @@ mode="$(stat -c %a "${backup}" 2>/dev/null)" || mode="$(stat -f %Lp "${backup}")
 gunzip -c "${backup}" | docker exec -i "${PG}" psql -X -v ON_ERROR_STOP=1 -q -U synapse -d synapse \
   -c "\\copy access_tokens ($(cat "${backup%.csv.gz}.columns")) FROM STDIN CSV HEADER"
 [[ "$(q 'SELECT count(*) FROM access_tokens')" == 8 ]] || { echo "FAIL restore"; exit 1; }
+
+# A transaction can publish a previously allocated low ID after the COPY snapshot.
+# It must remain outside the delete even when it satisfies the expiration criteria.
+cat >"${WORK}/psql-with-late-row" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+pg="$1"
+scenario="$2"
+sql="$(cat)"
+if [[ "${sql}" == COPY\ * && "${scenario}" == short ]]; then
+  docker exec -i "${pg}" psql -X -v ON_ERROR_STOP=1 -At -U synapse -d synapse \
+    <<<"${sql}" | sed '$d'
+  exit
+fi
+docker exec -i "${pg}" psql -X -v ON_ERROR_STOP=1 -At -U synapse -d synapse <<<"${sql}"
+if [[ "${sql}" == COPY\ * && "${scenario}" == late ]]; then
+  docker exec -i "${pg}" psql -X -v ON_ERROR_STOP=1 -q -U synapse -d synapse <<'SQL'
+INSERT INTO access_tokens (id, user_id, token, valid_until_ms, puppets_user_id)
+VALUES (0, '@late:x', 'late-fixture-token', 1, '@admin:x');
+SQL
+fi
+BASH
+chmod +x "${WORK}/psql-with-late-row"
+# The parser can produce a batch before finding that a later archive row is missing.
+printf -v PSQL_CMD '%q %q %q' "${WORK}/psql-with-late-row" "${PG}" short
+if "${SCRIPT}" --apply --confirm DELETE_EXPIRED_MATRIX_PUPPET_TOKENS \
+    --backup-dir "${WORK}/short" --batch-size 1 --pause 0 >"${WORK}/short-apply.log" 2>&1; then
+  echo "FAIL apply accepted an incomplete backup"
+  exit 1
+fi
+grep -q 'backup has 2 rows, expected 3' "${WORK}/short-apply.log"
+[[ "$(q 'SELECT count(*) FROM access_tokens')" == 8 ]] \
+  || { echo "FAIL apply deleted before the full backup was verified"; exit 1; }
+
+printf -v PSQL_CMD '%q %q %q' "${WORK}/psql-with-late-row" "${PG}" late
+"${SCRIPT}" --apply --confirm DELETE_EXPIRED_MATRIX_PUPPET_TOKENS --backup-dir "${WORK}/late" \
+  --batch-size 2 --pause 0 >"${WORK}/late-apply.log"
+[[ "$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM access_tokens")" == "0,4,5,6,7,8" ]] \
+  || { echo "FAIL an ID outside the backup was deleted"; exit 1; }
 
 echo "matrix puppet token cleanup: ok"
