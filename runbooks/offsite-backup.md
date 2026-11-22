@@ -19,7 +19,16 @@
 4. Local runs older than 14 days are removed once they are on the box or outside the retention ladder. A run the box does not hold yet is never removed.
 5. [`offsite_backup.py check`](../scripts/offsite_backup.py) fails when a datastore has no run, the newest run is older than 36 hours, or it lacks its receipt or an `.age` file. The unit goes into the failed state; monitoring should watch it.
 
-Only ciphertext leaves the master. The host has no age identity and no way to decrypt, so a break-in on Dev or on the box does not expose data.
+Only encrypted database dumps and their checksum metadata leave the master.
+Before any upload, the copy checks every payload's filename and binary age
+format header. A selected run with a mixed or mislabeled payload fails for that
+store and stays local for diagnosis. MariaDB can also carry the writer's
+optional `backup-receipt.json` when it matches the run and encrypted archive
+checksums. See the [age file format](https://age-encryption.org/v1).
+
+Key holders retain the age recovery identities outside the cluster. The
+monthly restore verifies the full checksum inventory and authenticates the
+encrypted data when it decrypts each archive.
 
 ## Storage Box access
 

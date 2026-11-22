@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copy encrypted Dev backup runs to the Hetzner Storage Box, keep 30 daily and 12 weekly runs, check freshness.
 
-Only ciphertext leaves the host. The age private identity is never on the host and this script never reads it.
+The host sends encrypted archives and their checksum metadata. The age recovery identity stays off the host.
 Credentials and the host's SSH identity live in a root-only JSON file outside Git (see the runbook).
 """
 
@@ -22,6 +22,9 @@ LS_LONG = re.compile(r"^\S+\s+(?:\d+|\?)\s+\S+\s+\S+\s+(?P<size>\d+)\s+\w+\s+\d+
 SFTP_TIMEOUT_SECONDS = 1800
 MAX_DELETIONS_PER_RUN = 60
 RECEIPT = "SHA256SUMS"
+MARIADB_RECEIPT = "backup-receipt.json"
+AGE_FORMAT_LINE = b"age-encryption.org/v1\n"
+ARCHIVE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.$-]*\.age")
 
 
 class OffsiteError(RuntimeError):
@@ -123,16 +126,43 @@ def local_runs(source):
     return runs
 
 
-def write_receipt(run, files):
-    lines = []
-    for path in files:
+def archive_names(prefix, names):
+    """Return the encrypted archive names, allowing the MariaDB writer's optional inventory."""
+    archives = set(names)
+    if prefix == "mariadb":
+        archives.discard(MARIADB_RECEIPT)
+    if not archives or any(not ARCHIVE_NAME.fullmatch(name) for name in archives):
+        raise OffsiteError("Backup run contains an unsupported file or has no encrypted archives")
+    return archives
+
+
+def write_receipt(run, files, prefix):
+    paths = {path.name: path for path in files}
+    if any(path.is_symlink() for path in paths.values()):
+        raise OffsiteError("Backup run contains a symbolic link")
+    digests = {}
+    for name in sorted(archive_names(prefix, paths)):
         digest = hashlib.sha256()
-        with path.open("rb") as handle:
+        with paths[name].open("rb") as handle:
+            header = handle.read(len(AGE_FORMAT_LINE))
+            if header != AGE_FORMAT_LINE:
+                raise OffsiteError("Backup archive has an invalid binary age format header")
+            digest.update(header)
             for block in iter(lambda: handle.read(1 << 20), b""):
                 digest.update(block)
-        lines.append(f"{digest.hexdigest()}  {path.name}\n")
+        digests[name] = digest.hexdigest()
+    if MARIADB_RECEIPT in paths:
+        # The writer's canonical receipt contains only the run name and these ciphertext hashes.
+        inventory = {"version": 1, "run": run.name, "archives": digests}
+        expected = (json.dumps(inventory, sort_keys=True) + "\n").encode("utf-8")
+        with paths[MARIADB_RECEIPT].open("rb") as metadata:
+            if metadata.read(len(expected) + 1) != expected:
+                raise OffsiteError("MariaDB backup receipt does not match the encrypted archives")
+        digests[MARIADB_RECEIPT] = hashlib.sha256(expected).hexdigest()
     receipt = run / RECEIPT
-    receipt.write_text("".join(lines), encoding="utf-8")
+    if receipt.is_symlink():
+        raise OffsiteError("Backup checksum receipt is a symbolic link")
+    receipt.write_text("".join(f"{digests[name]}  {name}\n" for name in sorted(digests)), encoding="utf-8")
     receipt.chmod(0o600)
     return receipt
 
@@ -141,7 +171,7 @@ def upload_run(sftp, base, prefix, run, files):
     """Upload into a hidden partial folder, verify every size, then rename to the final name."""
     final = f"{base}/{prefix}/{run.name}"
     partial = f"{base}/{prefix}/.{run.name}.partial"
-    receipt = write_receipt(run, files)
+    receipt = write_receipt(run, files, prefix)
     sources = files + [receipt]
     lines = [f"-mkdir {part}" for part in (base, f"{base}/{prefix}")]
     lines += [f"-rm {partial}/{p.name}" for p in sources] + [f"-rmdir {partial}", f"mkdir {partial}"]
