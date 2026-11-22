@@ -15,7 +15,7 @@ python3 scripts/rehearse_synapse_restore.py "$evidence_root/result"
 
 The fixture captures the PostgreSQL custom-format dump and the Synapse media store and signing key while writes from Synapse are stopped. It preserves the server name across both test instances. The script encrypts both archives with an ephemeral age recipient, verifies their checksums and restores them after removing the source. The final check opens the room and reads the message and media through the restored homeserver. It also verifies the public signing-key fingerprint. The database dump excludes one-time encryption-key rows and keeps the table schema. The restore checks that the table is empty before starting Synapse.
 
-The result contains `synapse-postgres.dump.age`, `synapse-media-signing.tar.age` and `receipt.json`. Use the receipt to record image revisions, archive checksums, the elapsed restore time and which checks passed. The ephemeral recovery identity is discarded before the result is published. Keep application content, recovery keys and passwords out of the audit record.
+The result contains `synapse-postgres.dump.age`, `synapse-media-signing.tar.age` and `receipt.json`. Use the receipt to record image revisions, archive checksums, the elapsed restore time and which checks passed. The command publishes the result after removing the disposable networks and discarding the ephemeral recovery identity. If removing a fixture network fails, the command reports its name and exits with a failure. Keep application content, recovery keys and passwords out of the audit record.
 
 ## Scheduled backup acceptance
 

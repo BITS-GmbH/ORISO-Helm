@@ -185,8 +185,10 @@ def pipeline(producer, consumer, label, *, output=subprocess.DEVNULL):
 @contextmanager
 def internal_network(docker):
     name = f"oriso-synapse-restore-{uuid4().hex}"
+    created = False
     try:
         run([*docker, "network", "create", "--internal", name], "Create internal fixture network")
+        created = True
         flag = run([
             *docker, "network", "inspect", "--format", "{{.Internal}}", name,
         ], "Verify fixture network isolation").stdout.strip()
@@ -194,7 +196,7 @@ def internal_network(docker):
             raise RuntimeError("The fixture network is not internal.")
         yield name
     finally:
-        run([*docker, "network", "rm", name], "Remove fixture network", check=False)
+        run([*docker, "network", "rm", name], f"Remove fixture network {name}", check=created)
 
 
 @contextmanager
