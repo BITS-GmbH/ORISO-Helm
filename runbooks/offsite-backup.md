@@ -15,7 +15,7 @@
 
 1. The dump jobs ([MariaDB](mariadb-host-backup.md), [MongoDB and PostgreSQL](datastore-host-backup.md)) write age-encrypted runs under `/root/db-backups/<datastore>-helm`.
 2. [`offsite_backup.py push`](../scripts/offsite_backup.py) copies every complete run it does not find on the box. It uploads into a hidden `.partial` folder, checks every file size, writes a `SHA256SUMS` receipt, and only then renames the folder. A broken transfer never looks like a finished run.
-3. After a successful copy it prunes the box to the newest run of each of the last 30 days plus the newest run of each of the last 12 ISO weeks. It refuses to delete more than 60 runs in one go, and it ignores folder names it does not recognise.
+3. After a successful copy it prunes the box to the newest run of each of the last 30 days plus the newest run of each of the last 12 ISO weeks. It refuses to delete more than 60 runs in one go, and it ignores folders with an invalid calendar date or a different datastore prefix. The copy, freshness check and restore use the same datastore boundary.
 4. Local runs older than 14 days are removed once they are on the box or outside the retention ladder. A run the box does not hold yet is never removed.
 5. [`offsite_backup.py check`](../scripts/offsite_backup.py) fails when a datastore has no run, the newest run is older than 36 hours, or it lacks its receipt or an `.age` file. The unit's result and the archive evidence feed the [backup monitoring checks](#monitor-the-backup-jobs).
 

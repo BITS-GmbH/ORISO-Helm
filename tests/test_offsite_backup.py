@@ -303,6 +303,44 @@ class OffsiteBackupTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
             restore.fetch_newest(self.sftp(), "oriso-dev", "mongodb", self.root / "fetched")
 
+    def test_copy_and_pruning_ignore_runs_from_a_different_store(self):
+        config = offsite.load_config(self.config_path)
+        config["retention"].update(daily=1, weekly=1)
+        local = self.add_run("mariadb", self.now - timedelta(hours=2))
+        target = self.box / "oriso-dev" / "mariadb"
+        target.mkdir(parents=True)
+        foreign_runs = [
+            target / f"mongodb-{stamp(self.now - timedelta(hours=1))}",
+            target / f"mongodb-{stamp(self.now - timedelta(days=14))}",
+        ]
+        retired = target / f"mariadb-{stamp(self.now - timedelta(days=7))}"
+        for run in [*foreign_runs, retired]:
+            run.mkdir()
+            (run / "dump.sql.gz.age").write_bytes(b"existing fixture")
+
+        report, problems = offsite.push(config, self.sftp(), self.now)
+
+        self.assertEqual(problems, [])
+        self.assertEqual(report["mariadb"]["uploaded"], 1)
+        self.assertEqual(report["mariadb"]["prunedRemote"], 1)
+        self.assertTrue((target / local.name).is_dir())
+        self.assertTrue(all(run.is_dir() for run in foreign_runs))
+        self.assertFalse(retired.exists())
+
+    def test_restore_ignores_runs_from_a_different_store(self):
+        valid = self.add_run("mariadb", self.now - timedelta(hours=2))
+        config = offsite.load_config(self.config_path)
+        offsite.push(config, self.sftp(), self.now)
+        target = self.box / "oriso-dev" / "mariadb"
+        foreign = target / f"mongodb-{stamp(self.now - timedelta(hours=1))}"
+        foreign.mkdir()
+        for file in (target / valid.name).iterdir():
+            (foreign / file.name).write_bytes(file.read_bytes())
+
+        restored, _ = restore.fetch_newest(self.sftp(), "oriso-dev", "mariadb", self.root / "fetched")
+
+        self.assertEqual(restored, valid.name)
+
     def test_units_and_example_configuration_match_the_script(self):
         import configparser
         import shlex

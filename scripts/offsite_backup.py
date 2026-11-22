@@ -163,7 +163,7 @@ def upload_run(sftp, base, prefix, run, files):
 
 def prune_remote(sftp, base, prefix, retention, deletions_left):
     names = sftp.names(f"{base}/{prefix}")
-    runs = [(n, w) for n in (names or []) if (w := run_stamp(n))]
+    runs = [(n, w) for n in (names or []) if (w := run_stamp(n, prefix=prefix))]
     if not runs:
         return 0
     keep = select_keep(runs, retention["daily"], retention["weekly"])
@@ -196,10 +196,9 @@ def push(config, sftp, now=None):
         try:
             remote = set(sftp.names(f"{base}/{prefix}") or [])
             local = local_runs(source)
-            ladder = select_keep(
-                [(n, run_stamp(n)) for n in remote | {run.name for run, _ in local} if run_stamp(n)],
-                retention["daily"], retention["weekly"],
-            )
+            names = remote | {run.name for run, _ in local}
+            candidates = [(n, w) for n in names if (w := run_stamp(n, prefix=prefix))]
+            ladder = select_keep(candidates, retention["daily"], retention["weekly"])
             uploaded = 0
             verified_archive_at = None
             for run, files in local:
