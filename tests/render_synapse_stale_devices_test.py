@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Render guard for ORISO-Helm#628: Synapse delete_stale_devices_after is off
-by default and 30d on Dev, and the one-off cleanup script selects only stale
+by default and 7d on Dev, and the one-off cleanup script selects only stale
 devices and never the operator's own."""
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def load_cleanup_script():
 def main() -> int:
     assert "delete_stale_devices_after" not in homeserver()
     dev = homeserver("-f", os.path.join(CHART_DIR, "values-dev.yaml"))
-    assert dev["delete_stale_devices_after"] == "30d", dev.get("delete_stale_devices_after")
+    assert dev["delete_stale_devices_after"] == "7d", dev.get("delete_stale_devices_after")
 
     cleanup = load_cleanup_script()
     now = 100 * DAY_MS
