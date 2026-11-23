@@ -75,6 +75,24 @@ def main() -> None:
 
     anonymizer = render("ipAnonymizer.enabled=true")[("Deployment", "ip-anonymizer")]
     assert anonymizer["spec"]["replicas"] == 1
+    [legacy_container] = anonymizer["spec"]["template"]["spec"]["containers"]
+    assert not any(var["name"] == "ANON_SESSION_KEY" for var in legacy_container.get("env", []))
+
+    keyed = render(
+        "ipAnonymizer.enabled=true",
+        "ipAnonymizer.sessionKeySecretName=ip-anonymizer-session-key",
+    )[("Deployment", "ip-anonymizer")]
+    [keyed_container] = keyed["spec"]["template"]["spec"]["containers"]
+    assert [var for var in keyed_container.get("env", []) if var["name"] == "ANON_SESSION_KEY"] == [{
+        "name": "ANON_SESSION_KEY",
+        "valueFrom": {"secretKeyRef": {"name": "ip-anonymizer-session-key", "key": "ANON_SESSION_KEY"}},
+    }], "expected ANON_SESSION_KEY from the configured Secret"
+    blocked_scale = helm(
+        "ipAnonymizer.enabled=true",
+        "ipAnonymizer.sessionKeySecretName=ip-anonymizer-session-key",
+        "ipAnonymizer.replicas=2",
+    )
+    assert blocked_scale.returncode != 0 and "ipAnonymizer.replicas must be 1" in blocked_scale.stderr
     scaled = helm("ipAnonymizer.enabled=true", "ipAnonymizer.replicas=2")
     assert scaled.returncode != 0 and "ipAnonymizer.replicas must be 1" in scaled.stderr, scaled.stderr
     # The guard only applies when ip-anonymizer is rendered.
