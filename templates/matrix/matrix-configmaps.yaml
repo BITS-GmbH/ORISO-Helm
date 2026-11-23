@@ -184,6 +184,14 @@ data:
       per_second: {{ dig "messages" "perSecond" 0.2 $rateLimits }}
       burst_count: {{ dig "messages" "burstCount" 10 $rateLimits }}
 
+    # rc_joins_per_room (ORISO-UserService#1744). Every enquiry joins its asker
+    # and the agency helpers into the shared agency holding room, so busy
+    # agencies exceed the shipped 1/s burst 10 per room; Synapse answered 429
+    # and left Dev session 258 without a room. Defaults are Synapse's shipped values.
+    rc_joins_per_room:
+      per_second: {{ dig "joinsPerRoom" "perSecond" 1 $rateLimits }}
+      burst_count: {{ dig "joinsPerRoom" "burstCount" 10 $rateLimits }}
+
     # Enable Sliding Sync (Matrix 2.0) for INSTANT real-time synchronization
     # MSC4140 delayed events let Element Call schedule a crash-safe leave event.
     max_event_delay_duration: 24h

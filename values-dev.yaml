@@ -252,6 +252,11 @@ matrix:
     messages:
       perSecond: 1
       burstCount: 60
+    # rc_joins_per_room (ORISO-UserService#1744): joins into the shared agency
+    # holding room returned 429 on 23 Nov (session 258 left without a room).
+    joinsPerRoom:
+      perSecond: 5
+      burstCount: 100
 matrixrtcAuth:
   membershipReaderUserId: "@matrixrtc-auth:matrix.oriso.org"
 

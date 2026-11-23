@@ -114,6 +114,19 @@ def main() -> int:
         if actual != expected:
             failures.append(f"{name}: expected rc_message {expected}, got {actual}")
 
+    joins_cases = {
+        "default rc_joins_per_room": ([], {"per_second": 1, "burst_count": 10}),
+        "rc_joins_per_room without rateLimits": (["--set", "matrix.rateLimits=null"], {"per_second": 1, "burst_count": 10}),
+        "rc_joins_per_room override": (
+            ["--set", "matrix.rateLimits.joinsPerRoom.burstCount=100"],
+            {"per_second": 1, "burst_count": 100},
+        ),
+    }
+    for name, (extra, expected) in joins_cases.items():
+        actual = render_homeserver(*extra).get("rc_joins_per_room")
+        if actual != expected:
+            failures.append(f"{name}: expected rc_joins_per_room {expected}, got {actual}")
+
     # rc_login must be untouched by the new block.
     login = render_homeserver().get("rc_login")
     if login != {
@@ -143,6 +156,12 @@ def main() -> int:
         )
     if messages.get("perSecond", 0) < 1:
         failures.append(f"Dev messages.perSecond {messages.get('perSecond', 0)} < 1")
+
+    joins = dev.get("joinsPerRoom") or {}
+    if joins.get("burstCount", 0) < 3 * HOLDING_ROOM_COUNSELLORS:
+        failures.append(f"Dev joinsPerRoom.burstCount {joins.get('burstCount', 0)} < {3 * HOLDING_ROOM_COUNSELLORS}")
+    if joins.get("perSecond", 0) < 2:
+        failures.append(f"Dev joinsPerRoom.perSecond {joins.get('perSecond', 0)} < 2")
 
     if failures:
         print("\n".join(failures), file=sys.stderr)
