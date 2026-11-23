@@ -489,9 +489,26 @@ def _check_runtime_readiness(
         namespace,
         "wait",
         "--for=condition=complete",
-        "job/signoz-telemetrystore-migrator",
+        f"job/{_current_migration_job(runner, namespace, release)}",
         f"--timeout={timeout}",
     )
+
+
+def _current_migration_job(runner: Runner, namespace: str, release: str) -> str:
+    mode_label = "oriso.org/signoz-migrator"
+    selector = f"app.kubernetes.io/instance={release},{mode_label}"
+    jobs = json.loads(_kubectl(runner, namespace, "get", "job", "-l", selector, "-o", "json"))
+    by_mode: dict[str, list[str]] = {"managed": [], "hook": []}
+    for item in jobs["items"]:
+        metadata = item["metadata"]
+        mode = metadata["labels"][mode_label]
+        if not metadata.get("deletionTimestamp") and mode in by_mode:
+            by_mode[mode].append(metadata["name"])
+
+    names = by_mode["managed"] or by_mode["hook"]
+    if len(names) > 1:
+        raise RuntimeError(f"Multiple SigNoz migration Jobs for {release}: {', '.join(sorted(names))}")
+    return names[0] if names else "signoz-telemetrystore-migrator"
 
 
 def _current_clickhouse_statefulsets(

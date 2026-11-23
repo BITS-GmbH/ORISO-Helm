@@ -1,95 +1,51 @@
 {{- if .Values.telemetryStoreMigrator.enabled }}
+{{- $baseName := include "telemetryStoreMigrator.fullname" . }}
+{{- $hook := and .Values.telemetryStoreMigrator.upgradeHelmHooks .Release.IsUpgrade }}
+{{- $embeddedSecret := "" }}
+{{- $passwordRef := dict }}
+{{- if not $hook }}
+  {{- if .Values.clickhouse.enabled }}
+    {{- $embeddedSecret = printf "%s-migrator-auth" (include "signoz.fullname" . | trunc 49 | trimSuffix "-") }}
+    {{- $passwordRef = dict "name" $embeddedSecret "key" "password" }}
+  {{- else if include "clickhouse.createSecret" . }}
+    {{- $passwordRef = dict "name" (include "clickhouse.secretName" .) "key" (include "clickhouse.secretPasswordKey" .) }}
+  {{- end }}
+{{- end }}
+{{- $podTemplate := include "telemetryStoreMigrator.podTemplate" (dict "root" . "passwordRef" $passwordRef) }}
+{{- $jobName := printf "%s-pre-upgrade" ($baseName | trunc 51 | trimSuffix "-") }}
+{{- if not $hook }}
+{{- /* A Job Pod template is immutable. Hash Secret references, never inline passwords. */ -}}
+{{- $jobName = printf "%s-%s" ($baseName | trunc 46 | trimSuffix "-") (sha256sum $podTemplate | trunc 16) }}
+{{- end }}
+{{- include "telemetryStoreMigrator.checkReplacement" (dict "root" . "jobName" $jobName "hook" $hook) }}
+{{- if $embeddedSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $embeddedSecret }}
+type: Opaque
+data:
+  password: {{ .Values.clickhouse.password | toString | b64enc | quote }}
+---
+{{- end }}
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "telemetryStoreMigrator.fullname" . }}
+  name: {{ $jobName }}
   labels:
     {{- include "telemetryStoreMigrator.selectorLabels" . | nindent 4 }}
+    oriso.org/signoz-migrator: {{ ternary "hook" "managed" $hook }}
   annotations:
     {{- with .Values.telemetryStoreMigrator.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
     {{- if .Values.telemetryStoreMigrator.upgradeHelmHooks }}
     argocd.argoproj.io/sync-options: Force=true,Replace=true
-    {{- if .Release.IsUpgrade }}
+    {{- end }}
+    {{- if $hook }}
     helm.sh/hook: pre-upgrade
     helm.sh/hook-delete-policy: before-hook-creation
     {{- end }}
-    {{- end }}
 spec:
-  template:
-    metadata:
-      labels:
-        {{- include "telemetryStoreMigrator.selectorLabels" . | nindent 8 }}
-    spec:
-      {{- with .Values.telemetryStoreMigrator.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.telemetryStoreMigrator.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.telemetryStoreMigrator.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.telemetryStoreMigrator.topologySpreadConstraints }}
-      topologySpreadConstraints:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      serviceAccountName: {{ include "telemetryStoreMigrator.serviceAccountName" . }}
-      initContainers:
-        - name: ready
-          image: {{ include "otelCollector.image" . }}
-          imagePullPolicy: {{ .Values.otelCollector.image.pullPolicy }}
-          env:
-            {{- include "snippet.telemetryStoreMigrator-env" . | nindent 12 }}
-          args:
-            - "migrate"
-            - "ready"
-          {{- with .Values.telemetryStoreMigrator.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-        - name: bootstrap
-          image: {{ include "otelCollector.image" . }}
-          imagePullPolicy: {{ .Values.otelCollector.image.pullPolicy }}
-          env:
-            {{- include "snippet.telemetryStoreMigrator-env" . | nindent 12 }}
-          args:
-            - "migrate"
-            - "bootstrap"
-          {{- with .Values.telemetryStoreMigrator.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-        - name: sync
-          image: {{ include "otelCollector.image" . }}
-          imagePullPolicy: {{ .Values.otelCollector.image.pullPolicy }}
-          env:
-            {{- include "snippet.telemetryStoreMigrator-env" . | nindent 12 }}
-          args:
-            - "migrate"
-            - "sync"
-            - "up"
-          {{- with .Values.telemetryStoreMigrator.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-      containers:
-        - name: async
-          image: {{ include "otelCollector.image" . }}
-          imagePullPolicy: {{ .Values.otelCollector.image.pullPolicy }}
-          env:
-            {{- include "snippet.telemetryStoreMigrator-env" . | nindent 12 }}
-          args:
-            - "migrate"
-            - "async"
-            - "up"
-          {{- with .Values.telemetryStoreMigrator.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-      restartPolicy: OnFailure
+  template: {{- $podTemplate | nindent 4 }}
 {{- end }}

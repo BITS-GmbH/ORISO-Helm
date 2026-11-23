@@ -95,7 +95,7 @@ class ClickHouseIngressPolicyTest(unittest.TestCase):
             "--set", "signoz.telemetryStoreMigrator.upgradeHelmHooks=true",
             "--set", "signoz.clickhouse.initContainers.init.enabled=true",
         )
-        migrator = chart["Job", "signoz-telemetrystore-migrator"]
+        migrator = chart["Job", "signoz-telemetrystore-migrator-pre-upgrade"]
         self.assertEqual(migrator["metadata"]["annotations"]["helm.sh/hook"], "pre-upgrade")
         rules = chart[POLICY]["spec"]["ingress"]
         migrator_labels = migrator["spec"]["template"]["metadata"]["labels"]

@@ -202,7 +202,7 @@ class RuntimeReadinessContractTest(unittest.TestCase):
             "spec": {"replicas": replicas},
         }
 
-    def runner(self, statefulsets: list[dict], failing_rollout: str = "") -> mock.Mock:
+    def runner(self, statefulsets: list[dict], failing_rollout: str = "", jobs: tuple = ()) -> mock.Mock:
         runner = mock.Mock(spec=MODULE.Runner)
 
         def run(command: list[str]) -> subprocess.CompletedProcess:
@@ -214,6 +214,10 @@ class RuntimeReadinessContractTest(unittest.TestCase):
                 "get", "statefulset", "-l", "clickhouse.altinity.com/chi=caritas-clickhouse", "-o", "json",
             ]:
                 output = json.dumps({"items": statefulsets})
+            elif arguments == [
+                "get", "job", "-l", "app.kubernetes.io/instance=caritas,oriso.org/signoz-migrator", "-o", "json",
+            ]:
+                output = json.dumps({"items": jobs})
             elif failing_rollout and failing_rollout in arguments:
                 raise subprocess.CalledProcessError(1, command)
             return subprocess.CompletedProcess(command, 0, stdout=output)
@@ -224,6 +228,22 @@ class RuntimeReadinessContractTest(unittest.TestCase):
     def checked_rollouts(self, runner: mock.Mock) -> list[str]:
         commands = [call.args[0][3:] for call in runner.run.call_args_list]
         return [command[2] for command in commands if command[:2] == ["rollout", "status"]]
+
+    def test_waits_for_the_managed_migration_job_instead_of_the_previous_hook(self) -> None:
+        runner = self.runner([self.statefulset("chi-caritas-clickhouse-cluster-0-0")], jobs=(
+            {"metadata": {"name": "old-hook", "labels": {"oriso.org/signoz-migrator": "hook"}}},
+            {"metadata": {"name": "current-job", "labels": {"oriso.org/signoz-migrator": "managed"}}},
+        ))
+        MODULE._check_runtime_readiness(runner, "caritas", "caritas", "15s")
+        self.assertEqual(runner.run.call_args.args[0][-2:], ["job/current-job", "--timeout=15s"])
+
+    def test_two_current_managed_migration_jobs_fail_the_readback(self) -> None:
+        runner = self.runner([], jobs=tuple(
+            {"metadata": {"name": name, "labels": {"oriso.org/signoz-migrator": "managed"}}}
+            for name in ("job-first", "job-second")
+        ))
+        with self.assertRaisesRegex(RuntimeError, "Multiple SigNoz migration Jobs"):
+            MODULE._current_migration_job(runner, "caritas", "caritas")
 
     def test_checks_all_actual_statefulsets_owned_by_the_current_installation(self) -> None:
         runner = self.runner([
