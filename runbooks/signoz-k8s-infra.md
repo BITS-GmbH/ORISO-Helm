@@ -12,6 +12,12 @@ Both export over OTLP/HTTP to the bundled SigNoz collector. They attach
 (`pre-dev`, `oriso-predev`) from Dev (`dev`, `oriso-dev`). OTLP host ports are
 disabled because application SDK ingestion remains on the central collector.
 
+The node agent authenticates to the kubelet with its service account. The
+kubelet's serving certificate must match the Pod's host IP and chain to the
+projected Kubernetes CA. Before rolling out to a cluster, verify those
+properties for each node and check that the Kubelet metrics arrive afterwards.
+Use a serving certificate issued by the trusted CA for new nodes.
+
 ## Where the configuration lives
 
 | what | where |

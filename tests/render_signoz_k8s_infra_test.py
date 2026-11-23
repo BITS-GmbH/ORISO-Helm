@@ -233,6 +233,12 @@ def main() -> None:
     for forbidden in ("log.message", "log.stack", "correlationId", "email", "token"):
         assert forbidden not in statements
 
+    kubelet = agent_config["receivers"]["kubeletstats"]
+    assert kubelet["auth_type"] == "serviceAccount"
+    assert kubelet["endpoint"] == "${env:K8S_HOST_IP}:10250"
+    assert kubelet["ca_file"] == "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    assert kubelet["insecure_skip_verify"] is False
+
     log_pipeline = agent_config["service"]["pipelines"]["logs"]
     assert log_pipeline["receivers"] == ["filelog/k8s"]
     assert "transform/oriso_log_privacy" in log_pipeline["processors"]
