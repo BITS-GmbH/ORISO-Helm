@@ -295,6 +295,35 @@ someone recreates the `oriso-alerts-slack` channel and a new API key (written
 into the same Secret). Re-run `helm upgrade` afterwards; the hook then
 recreates every dashboard and rule with no further clicks.
 
+## SigNoz migrations with Argo CD
+
+The production overlay keeps SigNoz disabled by default. If SigNoz is enabled
+for an approved Argo CD application, keep
+`signoz.telemetryStoreMigrator.argocdSyncHook=true`. The migration runs as a
+named Sync hook alongside the provisioned Secret and ClickHouse resources.
+Its readiness phase waits for ClickHouse. The Job name stays the same across
+revisions. The hook keeps its successful result until the sync completes, then
+Argo CD deletes the completed Job.
+
+- Before switching an existing installation to this hook, pause automatic sync.
+  Find the prior SigNoz migration Jobs for the release, including old fixed or
+  revision-specific names. Wait for them to complete or fail and confirm all
+  their Pods have terminated. Apply the new hook through the owning application
+  with a full sync. Resume automatic sync after verifying the outcome.
+- Use the normal apply path for the hook. Leave Force and Replace disabled at
+  application and resource level. Run full syncs for migration-changing
+  revisions so Argo CD processes the hook.
+- A failed hook remains available for diagnostics. Collect its logs, confirm
+  the Job is terminal and all its Pods have terminated, then delete that failed
+  Job with foreground propagation before retrying the full sync.
+- Use the [Argo CD runtime acceptance](signoz-runtime-acceptance.md#argo-cd-migration-evidence)
+  to verify the successful Sync hook and workload readiness. Confirm end-to-end
+  ingestion after collector activation.
+
+The active replacement check for direct Helm upgrades uses live Kubernetes
+state. When deploying with direct Helm using the production values, set
+`signoz.telemetryStoreMigrator.argocdSyncHook=false` to use Helm's Job lifecycle.
+
 ## First installation in an environment
 
 `<environment overlay>` is the whole overlay chain: `-f values-dev.yaml` for Dev,

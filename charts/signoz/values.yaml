@@ -1024,10 +1024,14 @@ telemetryStoreMigrator:
   # @default -- {}
   # @section -- Telemetry Store Migrator
   annotations: {}
-  # telemetryStoreMigrator.upgradeHelmHooks -- Enable Helm pre-upgrade hooks and ArgoCD Sync hooks.
+  # telemetryStoreMigrator.upgradeHelmHooks -- Enable the pre-upgrade hook for direct Helm upgrades.
   # @default -- true
   # @section -- Telemetry Store Migrator
   upgradeHelmHooks: true
+  # telemetryStoreMigrator.argocdSyncHook -- Use an Argo CD Sync hook with a fixed Job name and delete it only after success.
+  # @default -- false
+  # @section -- Telemetry Store Migrator
+  argocdSyncHook: false
   # telemetryStoreMigrator.enableReplication -- Whether to enable replication for the Telemetry Store Migrator.
   # @default -- true
   # @section -- Telemetry Store Migrator
@@ -1056,6 +1060,21 @@ telemetryStoreMigrator:
   # @section -- Telemetry Store Migrator
   # @default -- {}
   resources: {}
+  # telemetryStoreMigrator.podSecurityContext -- Security context for the migration Pod.
+  # @section -- Telemetry Store Migrator
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  # telemetryStoreMigrator.securityContext -- Shared security context for all migration phases.
+  # @section -- Telemetry Store Migrator
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+    readOnlyRootFilesystem: true
   # telemetryStoreMigrator.serviceAccount -- Service Account configuration for the Telemetry Store Migrator.
   # @section -- Telemetry Store Migrator
   serviceAccount:
