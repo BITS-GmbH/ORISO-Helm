@@ -27,6 +27,29 @@ kubectl -n ingress-nginx patch configmap ingress-nginx-controller --type=merge \
   --patch '{"data":{"use-http2":"false"}}'
 ```
 
+## Keep the external controller's access logs path only
+
+The application chart sets a path-only access log format when it manages the
+controller. Dev's external controller reads its own
+`ingress-nginx/ingress-nginx-controller` ConfigMap. Carry the chart's format
+into the external controller manifest whenever it is installed or reconciled.
+The format keeps status, latency and request ID for troubleshooting.
+
+For the running Dev controller, merge just the log format into the existing
+ConfigMap. Keep the HTTP/2 setting and the other operator settings intact.
+
+```sh
+kubectl -n ingress-nginx patch configmap ingress-nginx-controller --type=merge \
+  --patch '{"data":{"log-format-upstream":"[$time_local] \"$request_method $uri $server_protocol\" $status $body_bytes_sent $request_time [$proxy_upstream_name] $upstream_status $req_id"}}'
+```
+
+After the reload, confirm every ready controller replica uses the generated
+`upstreaminfo` log format with `$uri` in the request line. Verify it omits
+`$request`, `$request_uri`, and `$remote_addr`. Inspect the generated
+configuration for this check and use normal Dev requests to verify status and
+request-ID correlation. The [ingress replacement](https://github.com/OpenResilienceInitiative/ORISO-Helm/issues/537)
+must retain the same logging behavior.
+
 ## Verify on Dev
 
 1. Confirm the ConfigMap reads back `false`. Check that all controller pods are
