@@ -770,6 +770,8 @@ frontend:
 # networkPolicies.keycloakIngress.externalNginxNamespace for a separate controller.
 # Verify the ingress source and any off-chart Keycloak callers before enabling.
 nginxController:
+  # Switch only after migrating the routes. See docs/ingress-snippet-shutdown.md.
+  disableSnippetAnnotations: false
   enabled: true
   # Enable after the serving controller accepts Permissions-Policy and uses 429 for rate limits.
   useStandardRoutePolicies: false
