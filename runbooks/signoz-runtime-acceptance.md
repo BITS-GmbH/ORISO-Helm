@@ -28,6 +28,8 @@ The command fails closed unless all of the following are true:
 - the node-local and cluster-wide `k8s-infra` collectors are ready;
 - pod, node, node-condition, and host metrics carry the intended environment
   and cluster identity;
+- fresh kubelet filesystem availability and capacity samples support the
+  node-disk alert;
 - collector self-metrics are present, so a silent collector failure is visible;
 - a synthetic Kubernetes Event is collected;
 - a representative nested ORISO JSON log is collected with trace correlation,

@@ -42,6 +42,19 @@ RBAC, and the collector self-telemetry identity — is proven by
 
 Bumping the collector: change `signozCollector.image.tag`, then re-run that test.
 
+## Node filesystems and pod logs
+
+The node agent mounts `/var/log/pods`, `/proc` and `/sys` read-only. The host
+receiver uses the proc and sys views for CPU, disk I/O, load, memory and
+network metrics. Node filesystem alerts and dashboards use
+`k8s.node.filesystem.available` and `k8s.node.filesystem.capacity` from the
+kubelet. The raw `system.filesystem.*` series for arbitrary host mount points
+were retired when the host-root mount was removed.
+
+The filelog receiver reads Kubernetes CRI logs under `/var/log/pods`, as used
+by Containerd on ORISO Dev. The node agent still needs hostPath admission for
+its three read-only directories.
+
 ## Log privacy contract
 
 Only logs from the release namespace are tailed. SigNoz and `kube-system` logs

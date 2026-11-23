@@ -107,6 +107,8 @@ class ReadbackContractTest(unittest.TestCase):
             {
                 "podMetrics",
                 "nodeMetrics",
+                "nodeFilesystemAvailable",
+                "nodeFilesystemCapacity",
                 "hostMetrics",
                 "nodeCondition",
                 "collectorSelfMetrics",
@@ -123,6 +125,8 @@ class ReadbackContractTest(unittest.TestCase):
 
         self.assertIn("startsWith(metric_name, 'k8s.pod.')", queries["podMetrics"])
         self.assertIn("startsWith(metric_name, 'k8s.node.')", queries["nodeMetrics"])
+        self.assertIn("metric_name = 'k8s.node.filesystem.available'", queries["nodeFilesystemAvailable"])
+        self.assertIn("metric_name = 'k8s.node.filesystem.capacity'", queries["nodeFilesystemCapacity"])
         self.assertIn("startsWith(metric_name, 'system.')", queries["hostMetrics"])
         self.assertIn("metric_name = 'k8s.node.condition'", queries["nodeCondition"])
         self.assertIn(
@@ -134,6 +138,8 @@ class ReadbackContractTest(unittest.TestCase):
         for metric_query in (
             "podMetrics",
             "nodeMetrics",
+            "nodeFilesystemAvailable",
+            "nodeFilesystemCapacity",
             "hostMetrics",
             "nodeCondition",
             "collectorSelfMetrics",
@@ -157,6 +163,8 @@ class ReadbackContractTest(unittest.TestCase):
         healthy = {
             "podMetrics": 1,
             "nodeMetrics": 1,
+            "nodeFilesystemAvailable": 1,
+            "nodeFilesystemCapacity": 1,
             "hostMetrics": 1,
             "nodeCondition": 1,
             "collectorSelfMetrics": 1,
@@ -166,11 +174,12 @@ class ReadbackContractTest(unittest.TestCase):
         }
 
         self.assertEqual(MODULE.infra_readback_failures(healthy), [])
+        healthy["nodeFilesystemCapacity"] = 0
         healthy["hostMetrics"] = 0
         healthy["forbiddenLogBody"] = 1
         self.assertEqual(
             MODULE.infra_readback_failures(healthy),
-            ["hostMetrics missing", "forbiddenLogBody leaked"],
+            ["nodeFilesystemCapacity missing", "hostMetrics missing", "forbiddenLogBody leaked"],
         )
 
     def test_infra_rollouts_cover_node_and_cluster_collectors(self) -> None:

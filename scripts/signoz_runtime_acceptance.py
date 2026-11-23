@@ -344,6 +344,12 @@ def build_infra_readback_queries(
         "nodeMetrics": _metric_samples_query(
             "startsWith(metric_name, 'k8s.node.')", *metric_identity
         ),
+        "nodeFilesystemAvailable": _metric_samples_query(
+            "metric_name = 'k8s.node.filesystem.available'", *metric_identity
+        ),
+        "nodeFilesystemCapacity": _metric_samples_query(
+            "metric_name = 'k8s.node.filesystem.capacity'", *metric_identity
+        ),
         "hostMetrics": _metric_samples_query(
             "startsWith(metric_name, 'system.')", *metric_identity
         ),
