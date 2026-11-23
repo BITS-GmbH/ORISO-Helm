@@ -57,6 +57,14 @@ signoz:
     apiKeySecret:
       name: "signoz-observability-api-key"
   signoz:
+    # The existing Dev ext4 CSI volume uses fsGroupPolicy: File. Kubelet
+    # gives access to the root-owned SQLite data without copying the database.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      fsGroup: 65532
+      fsGroupChangePolicy: OnRootMismatch
     env:
       signoz_global_external__url: "https://dev.oriso.org/signoz"
   clickhouse:

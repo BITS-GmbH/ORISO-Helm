@@ -30,6 +30,7 @@ spec:
       {{- end }}
       {{- end }}
       serviceAccountName: {{ include "signoz.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.signoz.automountServiceAccountToken }}
       priorityClassName: {{ .Values.signoz.priorityClassName | quote }}
       {{- with .Values.signoz.nodeSelector }}
       nodeSelector:

@@ -786,6 +786,9 @@ signoz:
     # signoz.serviceAccount.name - The name of the service account to use. If not set and `create` is true, a name is generated.
     # @default -- null
     name:
+  # signoz.automountServiceAccountToken -- Mount a Kubernetes API token for custom deployments that need it.
+  # @section -- SigNoz
+  automountServiceAccountToken: false
   # signoz.service -- Service configuration for SigNoz.
   # This allows you to configure how SigNoz is exposed within the Kubernetes cluster.
   # @section -- SigNoz Networking
@@ -864,9 +867,10 @@ signoz:
     signoz_alertmanager_signoz_external__url: http://localhost:8080
   # signoz.podSecurityContext -- Pod-level security context.
   # @section -- SigNoz
-  # @default -- {}
-  podSecurityContext: {}
-  # fsGroup: 2000
+  # SQLite datasets on older storage backends may need the image's original identity.
+  podSecurityContext:
+    seccompProfile:
+      type: RuntimeDefault
 
   # signoz.podAnnotations -- Annotations for the SigNoz pod.
   # @section -- SigNoz
@@ -874,14 +878,11 @@ signoz:
   podAnnotations: {}
   # signoz.securityContext -- Container-level security context.
   # @section -- SigNoz
-  # @default -- {}
-  securityContext: {}
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+    readOnlyRootFilesystem: true
 
   # signoz.additionalVolumeMounts -- Additional volume mounts for the SigNoz container.
   # @section -- SigNoz
