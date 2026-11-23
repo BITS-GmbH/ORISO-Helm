@@ -217,6 +217,9 @@ def read_backup_freshness(path=BACKUP_CHECK_STATUS, *, push_path=BACKUP_PUSH_STA
         checked_at, ok, check_report = read_backup_status(path, "check", now)
     except FileNotFoundError:
         probe_reason = "missing-probe"
+    except PermissionError:
+        # A reader without access to the root-only receipt is a setup fault, not missing evidence.
+        probe_reason = "unreadable-probe"
     except (OSError, ValueError, RecursionError):
         pass
     else:
@@ -235,7 +238,7 @@ def read_backup_freshness(path=BACKUP_CHECK_STATUS, *, push_path=BACKUP_PUSH_STA
         store: {"state": "UNKNOWN", "reason": "unverified-archive", "archive_at": None}
         for store in BACKUP_STORES
     }
-    if probe_reason in {"missing-probe", "invalid-probe", "stale-probe"}:
+    if probe_reason in {"missing-probe", "unreadable-probe", "invalid-probe", "stale-probe"}:
         return {"probe": probe, "stores": stores}
 
     pushed_at, push_report = None, {}
