@@ -284,6 +284,20 @@ securityContext:
   runAsGroup: 101
   fsGroup: 101
   fsGroupChangePolicy: OnRootMismatch
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Security context for the built-in ClickHouse containers
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Enable only when a custom container needs to call the Kubernetes API
+automountServiceAccountToken: false
 
 # -- An allowlist of IP addresses or network masks the ClickHouse user is
 # allowed to access from. By default anything within a private network will be
