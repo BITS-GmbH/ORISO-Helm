@@ -46,12 +46,17 @@ def main():
     resource = private['additional_resources']['/oriso-internal/group-participation-history']
     assert resource['module'] == 'oriso_group_policy.HistoryResource'
     assert private['resources'] == []
-    assert not any('additional_resources' in x for x in homeserver['listeners'] if x['port'] != 8801)
+    for listener in homeserver['listeners']:
+        if listener['port'] == 8801:
+            continue
+        expected_paths = {'/.well-known/matrix/server'} if listener['port'] == 8802 else set()
+        assert set(listener.get('additional_resources', {})) == expected_paths
     service = find(docs, 'Service', 'matrix-group-history')
     assert service['spec']['type'] == 'ClusterIP'
     assert service['spec']['ports'] == [{'name': 'history', 'port': 8801, 'targetPort': 8801, 'protocol': 'TCP'}]
     ingress = find(docs, 'NetworkPolicy', 'matrix-group-policy-ingress')['spec']
     private_rule = next(x for x in ingress['ingress'] if x['ports'][0]['port'] == 8801)
+    assert {'protocol': 'TCP', 'port': 8802} in ingress['ingress'][0]['ports']
     assert private_rule['from'] == [{'podSelector': {'matchLabels': {'app': 'userservice'}}}]
     for obj in docs:
         if obj['kind'] != 'Ingress':

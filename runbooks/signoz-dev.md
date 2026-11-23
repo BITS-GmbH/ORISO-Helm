@@ -275,13 +275,14 @@ with their own key in the `SIGNOZ-API-KEY` header.
 
 ### Operations surfaces on Dev (#304)
 
-External anonymous readback, 2026-11-21, for the DPIA technical and
-organisational measures annex:
+Dev observations for the DPIA technical and organisational measures annex.
+The external readback was recorded on 2026-11-21. The MCP deployment was
+checked separately through Kubernetes metadata on 2026-11-21 UTC.
 
 | Surface | Control on Dev |
 | --- | --- |
 | SigNoz UI `/signoz` | SigNoz login. The page loads, but its API returns 401 without a session. Basic Auth cannot sit in front because SigNoz sends its own `Authorization: Bearer` header. |
-| SigNoz MCP `/signoz-mcp` | No server-held key. Each request needs the caller's SigNoz API key (above). |
+| SigNoz MCP | Kubernetes reports the hand-applied Deployment as ready, and its configuration still includes a setting for a server-held key. After Helm adoption and rollout, the Deployment runs in keyless mode and clients authenticate with their own SigNoz keys. Revoke the old key and verify client authentication after rollout. |
 | Storybook `/storybook-*` | The chart renders Basic Auth (`storybook.ingress.authSecret`). Live is still a hand-applied Ingress without auth until the `storybook-basic-auth` Secret exists and Helm owns the route. |
 | HealthDashboard `/health` | Public status only, by design (ORISO-HealthDashboard#57). |
 | Redis Commander, Status page | Not deployed on Dev. Both paths fall through to the App. |
@@ -370,6 +371,10 @@ the first cursor is available. A missing resume cursor exits 3 so the
 operator can investigate a journal gap. Treat missing or stale results as
 monitoring failures. A successful read with an empty page provides no
 health result.
+
+The [off-site backup monitoring scope](offsite-backup.md#monitor-the-backup-jobs)
+uses its own cursor for the two backup units and includes a sanitized archive
+freshness snapshot on every poll.
 
 #### Watch the check runner from another host
 

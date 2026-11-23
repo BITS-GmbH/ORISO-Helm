@@ -15,11 +15,20 @@
 
 1. The dump jobs ([MariaDB](mariadb-host-backup.md), [MongoDB and PostgreSQL](datastore-host-backup.md)) write age-encrypted runs under `/root/db-backups/<datastore>-helm`.
 2. [`offsite_backup.py push`](../scripts/offsite_backup.py) copies every complete run it does not find on the box. It uploads into a hidden `.partial` folder, checks every file size, writes a `SHA256SUMS` receipt, and only then renames the folder. A broken transfer never looks like a finished run.
-3. After a successful copy it prunes the box to the newest run of each of the last 30 days plus the newest run of each of the last 12 ISO weeks. It refuses to delete more than 60 runs in one go, and it ignores folder names it does not recognise.
+3. After a successful copy it prunes the box to the newest run of each of the last 30 days plus the newest run of each of the last 12 ISO weeks. It refuses to delete more than 60 runs in one go, and it ignores folders with an invalid calendar date or a different datastore prefix. The copy, freshness check and restore use the same datastore boundary.
 4. Local runs older than 14 days are removed once they are on the box or outside the retention ladder. A run the box does not hold yet is never removed.
-5. [`offsite_backup.py check`](../scripts/offsite_backup.py) fails when a datastore has no run, the newest run is older than 36 hours, or it lacks its receipt or an `.age` file. The unit goes into the failed state; monitoring should watch it.
+5. [`offsite_backup.py check`](../scripts/offsite_backup.py) fails when a datastore has no run, the newest run is older than 36 hours, or it lacks its receipt or an `.age` file. The unit's result and the archive evidence feed the [backup monitoring checks](#monitor-the-backup-jobs).
 
-Only ciphertext leaves the master. The host has no age identity and no way to decrypt, so a break-in on Dev or on the box does not expose data.
+Only encrypted database dumps and their checksum metadata leave the master.
+Before any upload, the copy checks every payload's filename and binary age
+format header. A selected run with a mixed or mislabeled payload fails for that
+store and stays local for diagnosis. MariaDB can also carry the writer's
+optional `backup-receipt.json` when it matches the run and encrypted archive
+checksums. See the [age file format](https://age-encryption.org/v1).
+
+Key holders retain the age recovery identities outside the cluster. The
+monthly restore verifies the full checksum inventory and authenticates the
+encrypted data when it decrypts each archive.
 
 ## Storage Box access
 
@@ -87,6 +96,49 @@ systemctl list-timers 'oriso-offsite-*' --no-pager
 
 Rehearsals with synthetic data add `--marker mariadb=schema.table --marker mongodb=db.collection --marker matrix-postgres=table`, which makes the test fail unless that marker holds rows.
 
+## Monitor the backup jobs
+
+The existing [journal reader](signoz-dev.md#read-completed-checks-for-the-incident-consumer)
+has a separate scope for the copy and verification services. On the approved
+backup host, use a reader account with access to the system journal and the
+two backup status receipts. Give the backup scope its own cursor.
+
+```sh
+python3 scripts/signoz_check_journal.py --scope offsite-backup --since '26 hours ago'
+python3 scripts/signoz_check_journal.py --scope offsite-backup --cursor "$last_backup_cursor"
+```
+
+The completion page follows the existing machine, boot, unit and invocation
+deduplication rules. A backup script exit status of 1 is `CRITICAL`. An invalid
+invocation can exit with status 2 and is `UNKNOWN`, as are timeouts, failed
+starts and incomplete systemd evidence. For `UNKNOWN`, inspect the unit
+invocation and journal first. A successful journal read can return an empty
+completion page. Evaluate its freshness snapshot on every poll.
+
+The snapshot reports the verification probe and each of `mariadb`, `mongodb`
+and `matrix-postgres` separately. The archive clock uses the newest known
+complete archive for that store. An archive older than 26 hours is
+`CRITICAL`, as is an explicitly incomplete archive. Missing or invalid
+evidence stays `UNKNOWN`. The verification service still uses its configured
+36-hour default.
+
+A verified upload after the last check can refresh archive evidence before the
+next daily verification. A copy with zero uploads for a store carries forward
+that store's verified upload and original verification time when the previous
+copy receipt contains them. A newer verification supersedes that upload evidence.
+
+A failed copy can omit a store from its report. Its prior verified upload stays
+under `carriedUploads` for recovery. The failed run and its reported problems
+remain visible. A later successful copy that uploads nothing for this store
+restores that receipt with its original verification time. If evidence remains
+stale or missing after recovery, start `oriso-offsite-check.service` on the
+approved backup host and inspect the new check receipt.
+
+Before enabling incident delivery, verify the restricted read command,
+cursor replay, a simulated job failure, a stale archive and one recovery
+through the approved consumer. The reader exposes fixed states, reasons and
+timestamps. Keep the raw receipts and journal on the host for diagnosis.
+
 ## Losing a key
 
 Either holder's identity restores every archive. If one holder leaves or loses their identity, the other generates a replacement, the recipients file is updated, and new runs are encrypted for both current holders. **Existing archives stay readable only by the identities they were encrypted for**, so keep a departing holder's identity until the last archive made for it has aged out (12 weeks), or re-encrypt the archives you still need.
@@ -95,4 +147,5 @@ Either holder's identity restores every archive. If one holder leaves or loses t
 
 - Server image backups and the Dreambau backups, which have their own jobs.
 - Staging and production. They need their own sub-accounts and a separate approval.
-- Alert delivery: the check unit fails, and wiring that into the existing monitoring is a follow-up.
+- Incident delivery and per-store archive size bands need operator acceptance
+  with the scheduled backup and restore evidence.

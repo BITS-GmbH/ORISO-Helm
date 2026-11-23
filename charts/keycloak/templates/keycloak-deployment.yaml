@@ -1,5 +1,11 @@
 {{- $probes := .Values.keycloakProbes | default dict -}}
-{{- $managementProbes := $probes.useManagementPort | default false -}}
+{{- $configuredReplicas := dig "replicas" 1 .Values.AsMap -}}
+{{- $replicas := int64 $configuredReplicas -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $configuredReplicas))) (lt $replicas 1) (gt $replicas 2147483647) -}}
+{{- fail "online-counseling-keycloak.replicas must be a positive 32-bit integer" -}}
+{{- end -}}
+{{- $clustered := gt $replicas 1 -}}
+{{- $managementProbes := or $clustered ($probes.useManagementPort | default false) -}}
 {{- $scrapeMetrics := eq (include "oriso.appMetrics.enabled" .) "true" -}}
 {{- $management := or $scrapeMetrics $managementProbes -}}
 apiVersion: apps/v1
@@ -7,7 +13,7 @@ kind: Deployment
 metadata:
   name: keycloak
 spec:
-  replicas: 1
+  replicas: {{ $replicas }}
   selector:
     matchLabels:
       app: keycloak
@@ -27,6 +33,17 @@ spec:
         {{- end }}
     spec:
       terminationGracePeriodSeconds: 60
+      {{- if $clustered }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: keycloak
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
       securityContext:
         {{- include "oriso.podSecurityContext" (dict "user" 1000) | nindent 8 }}
       {{- if .Values.keycloakServiceAccount }}
@@ -47,6 +64,12 @@ spec:
           imagePullPolicy: {{ include "oriso.imagePullPolicy" . | quote }}
           ports:
             - containerPort: 8080
+            {{- if $clustered }}
+            - name: cache-transport
+              containerPort: 7800
+            - name: cache-failure
+              containerPort: 57800
+            {{- end }}
             {{- if $management }}
             # Management health checks and metrics are served only on the pod port.
             - name: management
@@ -104,6 +127,12 @@ spec:
                   name: keycloak-secret-env
             - name: KC_HTTP_RELATIVE_PATH
               value: "/auth"
+            {{- if $clustered }}
+            - name: KC_CACHE
+              value: "ispn"
+            - name: KC_CACHE_STACK
+              value: "jdbc-ping"
+            {{- end }}
             {{- if $managementProbes }}
             - name: KC_HEALTH_ENABLED
               value: "true"

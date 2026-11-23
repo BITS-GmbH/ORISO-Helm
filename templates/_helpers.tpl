@@ -198,6 +198,33 @@ in templates.
 {{- default "Always" .Values.global.imagePullPolicy -}}
 {{- end -}}
 
+{{- define "oriso.ingress.standardRoutePolicies" -}}
+{{- $enabled := dig "useStandardRoutePolicies" false (.Values.nginxController | default dict) -}}
+{{- if not (kindIs "bool" $enabled) -}}
+{{- fail "nginxController.useStandardRoutePolicies must be a boolean" -}}
+{{- end -}}
+{{- $enabled -}}
+{{- end -}}
+
+{{- define "oriso.ingress.permissionsPolicy" -}}
+camera=(self "{{ . }}"), microphone=(self "{{ . }}"), display-capture=(self "{{ . }}")
+{{- end -}}
+
+{{- define "oriso.ingress.permissionsPolicyAnnotation" -}}
+{{- if eq (include "oriso.ingress.standardRoutePolicies" .root) "true" -}}
+nginx.ingress.kubernetes.io/custom-headers: {{ printf "%s/%s" .root.Release.Namespace .configMap | quote }}
+{{- else -}}
+nginx.ingress.kubernetes.io/configuration-snippet: {{ printf "add_header Permissions-Policy '%s' always;" (include "oriso.ingress.permissionsPolicy" .origin) | quote }}
+{{- end -}}
+{{- end -}}
+
+{{- define "oriso.ingress.rateLimitStatusAnnotation" -}}
+{{- if ne (include "oriso.ingress.standardRoutePolicies" .) "true" -}}
+nginx.ingress.kubernetes.io/configuration-snippet: |
+  limit_req_status 429;
+{{- end -}}
+{{- end -}}
+
 {{/*
 Resolve whether ORISO services should export OTLP telemetry.
 Enabling the bundled SigNoz dependency turns this on automatically unless
@@ -239,6 +266,10 @@ the bundled SigNoz chart is enabled, use its in-cluster collector service.
 {{- define "oriso.signozServiceName" -}}
 {{- $signoz := get .Values "signoz" | default dict -}}
 {{- default (include "oriso.signozFullname" .) (get $signoz "orisoServiceNameOverride" | default "") -}}
+{{- end -}}
+
+{{- define "oriso.signozRouteGatewayName" -}}
+{{- printf "%s-route-gateway" (include "oriso.signozServiceName" . | trunc 49 | trimSuffix "-") -}}
 {{- end -}}
 
 {{- define "oriso.signozInternalApiUrl" -}}

@@ -41,7 +41,68 @@ def render(*overrides: str) -> dict:
     return {(d["kind"], d["metadata"]["name"]): d for d in yaml.safe_load_all(result.stdout) if d}
 
 
+def assert_namespaced_controller() -> None:
+    scope = "nginxController.scopeToReleaseNamespace=true"
+    both = "nginxController.keepBothRbacScopes=true"
+    deployment = ("Deployment", "ingress-nginx-controller")
+    old_account = ("ServiceAccount", "ingress-nginx")
+    old_binding = ("ClusterRoleBinding", "ingress-nginx")
+    scoped_account = ("ServiceAccount", "ingress-nginx-scoped")
+    scoped_role = ("Role", "ingress-nginx-scoped")
+    scoped_binding = ("RoleBinding", "ingress-nginx-scoped")
+    cluster_role = ("ClusterRole", "ingress-nginx-scoped-default")
+    cluster_binding = ("ClusterRoleBinding", "ingress-nginx-scoped-default")
+    flag = "--watch-namespace=$(POD_NAMESPACE)"
+
+    for overrides, scoped, staged in (
+        ((), False, False),
+        ((both,), False, True),
+        ((scope, both), True, True),
+        ((scope,), True, False),
+    ):
+        documents = render(*overrides)
+        controller = documents[deployment]
+        pod = controller["spec"]["template"]["spec"]
+        annotations = controller["metadata"].get("annotations", {})
+        assert (annotations.get("oriso.org/keep-both-ingress-rbac-scopes") == "true") == staged
+        assert (flag in pod["containers"][0]["args"]) == scoped
+        assert pod["serviceAccountName"] == (scoped_account if scoped else old_account)[1]
+        assert (old_account in documents) == (not scoped or staged)
+        assert (old_binding in documents) == (not scoped or staged)
+        scoped_resources = (scoped_account, scoped_role, scoped_binding, cluster_role, cluster_binding)
+        assert all((resource in documents) == (scoped or staged) for resource in scoped_resources)
+        if not (scoped or staged):
+            continue
+        assert documents[cluster_role]["rules"] == [
+            {
+                "apiGroups": ["networking.k8s.io"],
+                "resources": ["ingressclasses"],
+                "verbs": ["get", "list", "watch"],
+            },
+            {
+                "apiGroups": [""],
+                "resources": ["namespaces"],
+                "resourceNames": ["default"],
+                "verbs": ["get"],
+            },
+        ]
+        for binding, role in ((scoped_binding, scoped_role), (cluster_binding, cluster_role)):
+            assert documents[binding]["subjects"] == [
+                {"kind": "ServiceAccount", "name": scoped_account[1], "namespace": "default"}
+            ]
+            assert documents[binding]["roleRef"] == {
+                "apiGroup": "rbac.authorization.k8s.io", "kind": role[0], "name": role[1]
+            }
+        namespaced = documents[scoped_role]["rules"]
+        assert any("secrets" in rule["resources"] for rule in namespaced)
+        assert not any("*" in rule["resources"] + rule["verbs"] for rule in namespaced)
+
+    disabled = render(scope, both, "nginxController.enabled=false")
+    assert not any(resource in disabled for resource in (old_account, old_binding, *scoped_resources))
+
+
 def main() -> None:
+    assert_namespaced_controller()
     docs = render()
     controller = docs[("Deployment", "ingress-nginx-controller")]
     assert controller["spec"]["replicas"] == 2, controller["spec"]["replicas"]
@@ -75,6 +136,24 @@ def main() -> None:
 
     anonymizer = render("ipAnonymizer.enabled=true")[("Deployment", "ip-anonymizer")]
     assert anonymizer["spec"]["replicas"] == 1
+    [legacy_container] = anonymizer["spec"]["template"]["spec"]["containers"]
+    assert not any(var["name"] == "ANON_SESSION_KEY" for var in legacy_container.get("env", []))
+
+    keyed = render(
+        "ipAnonymizer.enabled=true",
+        "ipAnonymizer.sessionKeySecretName=ip-anonymizer-session-key",
+    )[("Deployment", "ip-anonymizer")]
+    [keyed_container] = keyed["spec"]["template"]["spec"]["containers"]
+    assert [var for var in keyed_container.get("env", []) if var["name"] == "ANON_SESSION_KEY"] == [{
+        "name": "ANON_SESSION_KEY",
+        "valueFrom": {"secretKeyRef": {"name": "ip-anonymizer-session-key", "key": "ANON_SESSION_KEY"}},
+    }], "expected ANON_SESSION_KEY from the configured Secret"
+    blocked_scale = helm(
+        "ipAnonymizer.enabled=true",
+        "ipAnonymizer.sessionKeySecretName=ip-anonymizer-session-key",
+        "ipAnonymizer.replicas=2",
+    )
+    assert blocked_scale.returncode != 0 and "ipAnonymizer.replicas must be 1" in blocked_scale.stderr
     scaled = helm("ipAnonymizer.enabled=true", "ipAnonymizer.replicas=2")
     assert scaled.returncode != 0 and "ipAnonymizer.replicas must be 1" in scaled.stderr, scaled.stderr
     # The guard only applies when ip-anonymizer is rendered.

@@ -291,6 +291,9 @@ matrix:
   # 10,485,760 bytes). Keep it at or above ATTACHMENT_MAX_SIZE_IN_MB in
   # ORISO-Frontend (10,000,000 bytes) and below Synapse's max_upload_size (50M).
   maxUploadSize: "10m"
+  # First roll out Synapse and verify its server discovery response on port 8802.
+  # Then enable this exact Ingress route to remove the legacy server snippet.
+  routeServerDiscoveryViaSynapse: false
   matrixServerName: "your-server.local"
   # Public IP exempt from Synapse rate limiting; set per environment (ADR-005).
   serverPublicIp: ""
@@ -517,6 +520,9 @@ online-counseling-redis:
 
 # Keycloak
 online-counseling-keycloak:
+  # Set 2 or more after validating shared database capacity and peer traffic.
+  # Multiple replicas use JDBC discovery and private readiness checks.
+  replicas: 1
   imageName: "ghcr.io/openresilienceinitiative/oriso-keycloak"
   imageVersion: "dev"
 
@@ -709,6 +715,11 @@ userService:
   teamDiscussion:
     archiveRetentionDays: 0
 
+  # Notification retention. Non-positive values disable the corresponding cutoff.
+  eventNotificationRetention:
+    readDays: 90
+    absoluteDays: 365
+
   # 2FA / OTP login posture — enabled by default.
   otpAllowedForUsers: "true"
   otpAllowedForConsultants: "true"
@@ -759,9 +770,16 @@ frontend:
 # networkPolicies.keycloakIngress.externalNginxNamespace for a separate controller.
 # Verify the ingress source and any off-chart Keycloak callers before enabling.
 nginxController:
+  # Switch only after migrating the routes. See docs/ingress-snippet-shutdown.md.
+  disableSnippetAnnotations: false
   enabled: true
+  # Enable after the serving controller accepts Permissions-Policy and uses 429 for rate limits.
+  useStandardRoutePolicies: false
   # Two replicas, spread over nodes, with a PodDisruptionBudget (ORISO-Helm#544).
   replicas: 2
+  # See docs/ingress-controller-scope.md for staged upgrades of existing controllers.
+  scopeToReleaseNamespace: false
+  keepBothRbacScopes: false
 
 # IP anonymization proxy — replaces X-Real-IP/X-Forwarded-For with a
 # session-scoped UUID so no ORISO backend ever sees a real client IP.
@@ -770,12 +788,19 @@ ipAnonymizer:
   # Must stay 1 until sessions are shared between pods; the render fails above 1 (ORISO-Helm#544).
   replicas: 1
   image: "ghcr.io/openresilienceinitiative/ip-anonymizer:latest"
+  # Before deploying the stateless image, name an existing Secret in the release
+  # namespace with ANON_SESSION_KEY set to a standard-base64 32-byte random key.
+  sessionKeySecretName: ""
 
 
 # ---------- Observability ----------------------------------------------------------------
 # SigNoz backend, collection agents, and optional ORISO dashboards/alerts.
 signoz:
   enabled: false
+  orisoIngress:
+    # Prepare the route gateway before switching public SigNoz routes to it.
+    prepareRouteGateway: false
+    useRouteGateway: false
   # Separate Kubernetes identities for the protected Pre-Dev E2E workflow.
   orisoPreDevE2EAccess:
     enabled: false

@@ -57,6 +57,54 @@ class KeycloakReadinessTest(unittest.TestCase):
                 self.assertNotIn("KC_HEALTH_ENABLED", env(chart[DEPLOYMENT]))
                 self.assertTrue(PROBES.keys().isdisjoint(container(chart)))
 
+    def test_multiple_replicas_use_private_health_and_jdbc_discovery(self):
+        default = resources(args=("--set", "networkPolicies.keycloakIngress.enabled=true"))
+        clustered = resources(args=(
+            "--set", "networkPolicies.keycloakIngress.enabled=true",
+            "--set", f"{SUBCHART}.replicas=2",
+        ))
+        pdb = ("PodDisruptionBudget", "keycloak")
+        self.assertNotIn(pdb, default)
+        self.assertEqual(default[DEPLOYMENT]["spec"]["replicas"], 1)
+        self.assertNotIn("KC_CACHE_STACK", env(default[DEPLOYMENT]))
+        self.assertEqual(clustered[DEPLOYMENT]["spec"]["replicas"], 2)
+        settings = env(clustered[DEPLOYMENT])
+        self.assertEqual(settings["KC_CACHE"], "ispn")
+        self.assertEqual(settings["KC_CACHE_STACK"], "jdbc-ping")
+        self.assertEqual(settings["KC_HEALTH_ENABLED"], "true")
+        self.assertEqual(settings["KC_METRICS_ENABLED"], "true")
+        keycloak = container(clustered)
+        self.assertEqual(keycloak["readinessProbe"]["httpGet"], {
+            "path": "/auth/health/ready", "port": "management",
+        })
+        self.assertEqual({port.get("name"): port["containerPort"] for port in keycloak["ports"]}, {
+            None: 8080, "management": 9000, "cache-transport": 7800, "cache-failure": 57800,
+        })
+        pod = clustered[DEPLOYMENT]["spec"]["template"]
+        anti = pod["spec"]["affinity"]["podAntiAffinity"]
+        self.assertNotIn("requiredDuringSchedulingIgnoredDuringExecution", anti)
+        (preferred,) = anti["preferredDuringSchedulingIgnoredDuringExecution"]
+        self.assertEqual(preferred["podAffinityTerm"], {
+            "topologyKey": "kubernetes.io/hostname", "labelSelector": {"matchLabels": pod["metadata"]["labels"]},
+        })
+        self.assertEqual(clustered[pdb]["spec"], {
+            "maxUnavailable": 1, "selector": {"matchLabels": pod["metadata"]["labels"]},
+        })
+        self.assertEqual(clustered[SERVICE], default[SERVICE])
+        policy = ("NetworkPolicy", "keycloak-ingress")
+        self.assertEqual(clustered[policy], default[policy])
+        self.assertEqual(
+            {key: doc for key, doc in clustered.items() if key[0] == "Ingress"},
+            {key: doc for key, doc in default.items() if key[0] == "Ingress"},
+        )
+
+    def test_invalid_replica_counts_cannot_disable_the_deployment(self):
+        for replicas in ("0", "-1", "2.5", "invalid", "2147483648"):
+            with self.subTest(replicas=replicas), self.assertRaisesRegex(
+                AssertionError, "online-counseling-keycloak.replicas must be a positive 32-bit integer"
+            ):
+                resources(args=("--set-string", f"{SUBCHART}.replicas={replicas}"))
+
     def test_existing_app_port_path_and_timing_overrides_still_render(self):
         chart = resources(args=(
             "--set-string", f"{PROBE_VALUES}.startup.path=/custom/started",

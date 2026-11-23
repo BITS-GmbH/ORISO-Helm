@@ -3,6 +3,10 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ingress-nginx-controller
+  {{- if .Values.nginxController.keepBothRbacScopes }}
+  annotations:
+    oriso.org/keep-both-ingress-rbac-scopes: "true"
+  {{- end }}
   labels:
     app.kubernetes.io/name: ingress-nginx
     app.kubernetes.io/component: controller
@@ -25,7 +29,7 @@ spec:
         {{- include "oriso.appMetrics.podAnnotations" (dict "job" "ingress-nginx" "port" 10254 "path" "/metrics") | nindent 8 }}
       {{- end }}
     spec:
-      serviceAccountName: ingress-nginx
+      serviceAccountName: {{ if .Values.nginxController.scopeToReleaseNamespace }}ingress-nginx-scoped{{ else }}ingress-nginx{{ end }}
       # Soft anti-affinity: replicas spread over nodes, yet still schedule on a single-node cluster.
       affinity:
         podAntiAffinity:
@@ -52,6 +56,9 @@ spec:
             - --controller-class=k8s.io/ingress-nginx
             - --publish-service=$(POD_NAMESPACE)/ingress-nginx
             - --configmap=$(POD_NAMESPACE)/ingress-nginx-controller
+            {{- if .Values.nginxController.scopeToReleaseNamespace }}
+            - --watch-namespace=$(POD_NAMESPACE)
+            {{- end }}
             # Keep serving for 10 s after SIGTERM, while the Service and an externalTrafficPolicy: Local
             # load balancer stop sending to this pod (ORISO-Helm#544).
             - --shutdown-grace-period=10
