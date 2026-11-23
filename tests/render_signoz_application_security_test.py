@@ -45,9 +45,10 @@ class ApplicationSecurityTest(unittest.TestCase):
             "signoz-db": "signoz-db-caritas-signoz-0", "backup": "caritas-signoz-data-protection-backup",
         })
 
-    def test_base_profile_keeps_the_images_identity_for_older_storage_backends(self):
+    def test_non_dev_profile_keeps_the_images_identity_even_with_an_inherited_dev_value(self):
         docs = by_key(render(helm_args=(
             "--set", "signoz.enabled=true",
+            "--set", "signoz.signoz.devSQLiteFilesystemGroup=65532",
             "--set-string", "signoz.signoz.env.signoz_global_external__url=https://render.oriso.internal/signoz",
         )))
         pod = application(docs)["template"]["spec"]

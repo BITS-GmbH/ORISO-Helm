@@ -871,6 +871,9 @@ signoz:
   podSecurityContext:
     seccompProfile:
       type: RuntimeDefault
+  # signoz.devSQLiteFilesystemGroup -- Non-root identity for Dev's persistent SQLite volume on a compatible CSI driver.
+  # @section -- SigNoz
+  devSQLiteFilesystemGroup: null
 
   # signoz.podAnnotations -- Annotations for the SigNoz pod.
   # @section -- SigNoz

@@ -49,7 +49,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.signoz.podSecurityContext | nindent 8 }}
+        {{- include "signoz.podSecurityContext" (dict "settings" .Values.signoz "global" .Values.global "externalDatabase" .Values.postgresql.enabled) | nindent 8 }}
       containers:
         - name: signoz
           securityContext:

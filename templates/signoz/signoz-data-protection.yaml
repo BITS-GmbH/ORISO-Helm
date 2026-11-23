@@ -397,7 +397,7 @@ spec:
           securityContext:
             runAsUser: 0
             runAsGroup: 0
-            {{- with get $signozValues "podSecurityContext" }}
+            {{- with include "signoz.podSecurityContext" (dict "settings" $signozValues "global" .Values.global "externalDatabase" (dig "postgresql" "enabled" false $signoz)) | fromYaml }}
             {{- if hasKey . "fsGroup" }}
             supplementalGroups:
               - {{ get . "fsGroup" }}
