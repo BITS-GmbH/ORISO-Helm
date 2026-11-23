@@ -13,7 +13,6 @@ kind: Ingress
 metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
-    kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/limit-rpm: {{ dig "requestsPerMinute" 6 $limit | quote }}
     nginx.ingress.kubernetes.io/limit-burst-multiplier: {{ dig "burstMultiplier" 2 $limit | quote }}
     # Keep 429 local to this ingress; the controller already permits snippets.
