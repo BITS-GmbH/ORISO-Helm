@@ -1,3 +1,11 @@
+{{- $readOnlyRoot := and .Values.containerSecurityContext.enabled .Values.containerSecurityContext.readOnlyRootFilesystem -}}
+{{- $extraMounts := include "common.tplvalues.render" (dict "value" .Values.extraVolumeMounts "context" $) -}}
+{{- $runtimeMounts := dict "/opt/bitnami/zookeeper/conf" "conf" "/opt/bitnami/zookeeper/logs" "logs" "/tmp" "tmp" -}}
+{{- if and $readOnlyRoot .Values.extraVolumeMounts -}}
+  {{- range $mount := fromYamlArray $extraMounts -}}
+    {{- $_ := unset $runtimeMounts $mount.mountPath -}}
+  {{- end -}}
+{{- end -}}
 apiVersion: {{ include "common.capabilities.statefulset.apiVersion" . }}
 kind: StatefulSet
 metadata:
@@ -44,6 +52,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ template "zookeeper.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
       {{- include "zookeeper.imagePullSecrets" . | nindent 6 }}
       {{- if .Values.hostAliases }}
       hostAliases: {{- include "common.tplvalues.render" (dict "value" .Values.hostAliases "context" $) | nindent 8 }}
@@ -76,6 +85,7 @@ spec:
       {{- end }}
       initContainers:
         {{- if and .Values.volumePermissions.enabled .Values.persistence.enabled }}
+        # The optional repair container needs root to change existing volume ownership.
         - name: volume-permissions
           image: {{ template "zookeeper.volumePermissions.image" . }}
           imagePullPolicy: {{ default "" .Values.volumePermissions.image.pullPolicy | quote }}
@@ -105,6 +115,23 @@ spec:
             - name: data-log
               mountPath: {{ .Values.dataLogDir }}
             {{- end }}
+        {{- end }}
+        {{- if $readOnlyRoot }}
+        - name: prepare-runtime
+          image: {{ include "zookeeper.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | quote }}
+          securityContext: {{- omit .Values.containerSecurityContext "enabled" | toYaml | nindent 12 }}
+          command: ["/bin/bash", "-ec"]
+          args:
+            - |
+              mkdir -p /zookeeper-runtime/{conf,logs,tmp}
+              cp -R /opt/bitnami/zookeeper/conf/. /zookeeper-runtime/conf/
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: zookeeper-runtime
+              mountPath: /zookeeper-runtime
         {{- end }}
         {{- if or .Values.tls.client.enabled .Values.tls.quorum.enabled }}
         - name: init-certs
@@ -152,6 +179,11 @@ spec:
             - name: scripts
               mountPath: /scripts/init-certs.sh
               subPath: init-certs.sh
+            {{- if $readOnlyRoot }}
+            - name: zookeeper-runtime
+              mountPath: /tmp
+              subPath: tmp
+            {{- end }}
             {{- if or .Values.tls.client.enabled }}
             - name: client-certificates
               mountPath: /certs/client
@@ -413,6 +445,13 @@ spec:
               subPath: setup.sh
             - name: data
               mountPath: /bitnami/zookeeper
+            {{- if $readOnlyRoot }}
+            {{- range $path, $directory := $runtimeMounts }}
+            - name: zookeeper-runtime
+              mountPath: {{ $path }}
+              subPath: {{ $directory }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.dataLogDir }}
             - name: data-log
               mountPath: {{ .Values.dataLogDir }}
@@ -433,12 +472,16 @@ spec:
               readOnly: true
             {{- end }}
             {{- if .Values.extraVolumeMounts }}
-            {{- include "common.tplvalues.render" ( dict "value" .Values.extraVolumeMounts "context" $ ) | nindent 12 }}
+            {{- $extraMounts | nindent 12 }}
             {{- end }}
         {{- if .Values.sidecars }}
         {{- include "common.tplvalues.render" ( dict "value" .Values.sidecars "context" $ ) | nindent 8 }}
         {{- end }}
       volumes:
+        {{- if $readOnlyRoot }}
+        - name: zookeeper-runtime
+          emptyDir: {}
+        {{- end }}
         - name: scripts
           configMap:
             name: {{ printf "%s-scripts" (include "common.names.fullname" .) }}
