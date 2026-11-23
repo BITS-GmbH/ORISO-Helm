@@ -21,8 +21,12 @@
 
 Only encrypted database dumps and their checksum metadata leave the master.
 Before any upload, the copy checks every payload's filename and binary age
-format header. A selected run with a mixed or mislabeled payload fails for that
-store and stays local for diagnosis. MariaDB can also carry the writer's
+format header. A selected run with a mixed or mislabeled payload is not copied
+and stays local for diagnosis. The copy continues with the store's other runs
+and its pruning, but exits 1 and names the rejected run every night until it is
+gone. After diagnosis, move the run out of the store's backup folder on the
+host, then start `oriso-offsite-backup.service` and check that
+`/var/lib/oriso-offsite-backup/push.json` reports `"ok": true`. MariaDB can also carry the writer's
 optional `backup-receipt.json` when it matches the run and encrypted archive
 checksums. See the [age file format](https://age-encryption.org/v1).
 
