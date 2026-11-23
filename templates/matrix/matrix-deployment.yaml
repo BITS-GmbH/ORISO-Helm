@@ -72,10 +72,8 @@ spec:
           - --keys-directory
           - /data
         env:
-          {{- if eq (include "oriso.matrixGroupPolicy.enabled" .) "true" }}
           - name: PYTHONPATH
-            value: /opt/oriso-modules
-          {{- end }}
+            value: "/opt/oriso-server-discovery{{ if eq (include "oriso.matrixGroupPolicy.enabled" .) "true" }}:/opt/oriso-modules{{ end }}"
           - name: SYNAPSE_SERVER_NAME
             valueFrom:
               configMapKeyRef:
@@ -98,6 +96,9 @@ spec:
             protocol: TCP
           {{- end }}
           - containerPort: 8008
+            protocol: TCP
+          - name: discovery
+            containerPort: 8802
             protocol: TCP
           - containerPort: 8009
             protocol: TCP
@@ -130,6 +131,9 @@ spec:
         volumeMounts:
           - mountPath: /tmp
             name: tmp
+          - mountPath: /opt/oriso-server-discovery
+            name: server-discovery-module
+            readOnly: true
           {{- if eq (include "oriso.matrixGroupPolicy.enabled" .) "true" }}
           - name: group-policy-module
             mountPath: /opt/oriso-modules
@@ -169,6 +173,12 @@ spec:
         - name: homeserver-config
           configMap:
             name: matrix-homeserver-oidc
+        - name: server-discovery-module
+          configMap:
+            name: matrix-homeserver-oidc
+            items:
+              - key: oriso_server_discovery.py
+                path: oriso_server_discovery.py
         - name: homeserver-database-secret
           secret:
             secretName: matrix-postgres-secret

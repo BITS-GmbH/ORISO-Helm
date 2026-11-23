@@ -93,6 +93,19 @@ helm upgrade --install caritas ./ --namespace caritas --create-namespace --wait-
 
 The first `caritas` is the Helm release name, the second is the Kubernetes namespace. Both can be changed to suit your environment.
 
+### Matrix server discovery rollout
+
+First upgrade with `matrix.routeServerDiscoveryViaSynapse` set to `false`.
+After the Synapse pod is Ready, check that `matrix-synapse:8802` serves
+`/.well-known/matrix/server` with the public hostname and port 443.
+Then enable the setting to move the exact public route to that listener.
+The route switch does not restart Synapse. Check the public JSON response and
+CORS header after the switch. Client discovery and the existing Matrix API
+routes keep their current routing.
+
+Before controller snippets are disabled, setting the option to `false` restores
+the legacy Ingress response.
+
 ### MatrixRTC / LiveKit runtime Secrets
 
 LiveKit and MatrixRTC auth read their sensitive runtime material from

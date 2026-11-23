@@ -291,6 +291,9 @@ matrix:
   # 10,485,760 bytes). Keep it at or above ATTACHMENT_MAX_SIZE_IN_MB in
   # ORISO-Frontend (10,000,000 bytes) and below Synapse's max_upload_size (50M).
   maxUploadSize: "10m"
+  # First roll out Synapse and verify its server discovery response on port 8802.
+  # Then enable this exact Ingress route to remove the legacy server snippet.
+  routeServerDiscoveryViaSynapse: false
   matrixServerName: "your-server.local"
   # Public IP exempt from Synapse rate limiting; set per environment (ADR-005).
   serverPublicIp: ""

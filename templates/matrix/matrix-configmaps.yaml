@@ -56,6 +56,18 @@ data:
         resources:
           - names: [client, federation]
             compress: false
+      # A separate listener keeps the public delegation host independent of the
+      # Matrix identity and leaves the built-in client discovery tree intact.
+      - port: 8802
+        tls: false
+        type: http
+        bind_addresses: ["0.0.0.0"]
+        resources: []
+        additional_resources:
+          /.well-known/matrix/server:
+            module: oriso_server_discovery.ServerDiscoveryResource
+            config:
+              delegated_server: {{ printf "%s:443" .Values.global.domainName | quote }}
       {{- if eq (include "oriso.matrixGroupPolicy.enabled" $) "true" }}
       # No global register_web_resource: that would mount the history API on
       # every HTTP listener, including the public Matrix client surface.
@@ -199,6 +211,8 @@ data:
     experimental_features:
       msc3575_enabled: true
       msc3575_for_workers: true
+  oriso_server_discovery.py: |
+{{ .Files.Get "files/matrix/oriso_server_discovery.py" | indent 4 }}
 kind: ConfigMap
 metadata:
   name: matrix-homeserver-oidc
