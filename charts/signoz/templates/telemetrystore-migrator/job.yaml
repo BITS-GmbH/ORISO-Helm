@@ -1,6 +1,9 @@
 {{- if .Values.telemetryStoreMigrator.enabled }}
 {{- $baseName := include "telemetryStoreMigrator.fullname" . }}
-{{- $hook := and .Values.telemetryStoreMigrator.upgradeHelmHooks .Release.IsUpgrade }}
+{{- $migrator := .Values.telemetryStoreMigrator }}
+{{- $argo := $migrator.argocdSyncHook }}
+{{- $hook := and (not $argo) $migrator.upgradeHelmHooks .Release.IsUpgrade }}
+{{- $annotations := deepCopy ($migrator.annotations | default dict) }}
 {{- $embeddedSecret := "" }}
 {{- $passwordRef := dict }}
 {{- if not $hook }}
@@ -12,10 +15,32 @@
   {{- end }}
 {{- end }}
 {{- $podTemplate := include "telemetryStoreMigrator.podTemplate" (dict "root" . "passwordRef" $passwordRef) }}
-{{- $jobName := printf "%s-pre-upgrade" ($baseName | trunc 51 | trimSuffix "-") }}
-{{- if not $hook }}
-{{- /* A Job Pod template is immutable. Hash Secret references, never inline passwords. */ -}}
-{{- $jobName = printf "%s-%s" ($baseName | trunc 46 | trimSuffix "-") (sha256sum $podTemplate | trunc 16) }}
+{{- $mode := "managed" }}
+{{- $jobName := $baseName }}
+{{- if $argo }}
+  {{- /* Keep one Job identity across rendered revisions. An existing active Job
+        cannot be replaced by applying a changed immutable Pod template. */}}
+  {{- $mode = "argocd" }}
+  {{- $jobName = printf "%s-sync" ($baseName | trunc 58 | trimSuffix "-") }}
+  {{- $lifecycleAnnotations := list
+    "argocd.argoproj.io/hook" "argocd.argoproj.io/hook-delete-policy"
+    "argocd.argoproj.io/sync-options" "argocd.argoproj.io/sync-wave"
+    "helm.sh/hook" "helm.sh/hook-delete-policy" }}
+  {{- range $key := $lifecycleAnnotations }}
+    {{- if hasKey $annotations $key }}
+      {{- fail (printf "Argo CD migrator manages annotation %s. Remove it from telemetryStoreMigrator.annotations." $key) }}
+    {{- end }}
+  {{- end }}
+  {{- $_ := set $annotations "argocd.argoproj.io/hook" "Sync" }}
+  {{- $_ := set $annotations "argocd.argoproj.io/hook-delete-policy" "HookSucceeded" }}
+{{- else if $hook }}
+  {{- $mode = "hook" }}
+  {{- $jobName = printf "%s-pre-upgrade" ($baseName | trunc 51 | trimSuffix "-") }}
+  {{- $_ := set $annotations "helm.sh/hook" "pre-upgrade" }}
+  {{- $_ := set $annotations "helm.sh/hook-delete-policy" "before-hook-creation" }}
+{{- else }}
+  {{- /* A Job Pod template is immutable. Hash Secret references, never inline passwords. */}}
+  {{- $jobName = printf "%s-%s" ($baseName | trunc 46 | trimSuffix "-") (sha256sum $podTemplate | trunc 16) }}
 {{- end }}
 {{- include "telemetryStoreMigrator.checkReplacement" (dict "root" . "jobName" $jobName "hook" $hook) }}
 {{- if $embeddedSecret }}
@@ -34,17 +59,10 @@ metadata:
   name: {{ $jobName }}
   labels:
     {{- include "telemetryStoreMigrator.selectorLabels" . | nindent 4 }}
-    oriso.org/signoz-migrator: {{ ternary "hook" "managed" $hook }}
+    oriso.org/signoz-migrator: {{ $mode }}
   annotations:
-    {{- with .Values.telemetryStoreMigrator.annotations }}
+    {{- with $annotations }}
     {{- toYaml . | nindent 4 }}
-    {{- end }}
-    {{- if .Values.telemetryStoreMigrator.upgradeHelmHooks }}
-    argocd.argoproj.io/sync-options: Force=true,Replace=true
-    {{- end }}
-    {{- if $hook }}
-    helm.sh/hook: pre-upgrade
-    helm.sh/hook-delete-policy: before-hook-creation
     {{- end }}
 spec:
   template: {{- $podTemplate | nindent 4 }}

@@ -176,7 +176,10 @@ Layer `values-prod.yaml` over the base values for production. With that overlay,
 `signoz.enabled=true` prepares the internal UI and data stores. The bundled
 collector has zero replicas and the overlay disables its autoscaler, public
 ingresses, gateway, and Java, infrastructure and browser exporters. The UI and
-collector Services use `ClusterIP`.
+collector Services use `ClusterIP`. The production overlay uses a named
+Argo CD Sync hook for the ClickHouse migration. Use the
+[Argo CD migration procedure](runbooks/signoz-managed-observability.md#signoz-migrations-with-argo-cd)
+before enabling SigNoz or changing its migration image.
 
 After the activation requirements are verified, local Java export needs
 `global.observability.otlpEnabled=true` and a positive
