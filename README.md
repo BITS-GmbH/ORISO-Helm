@@ -156,6 +156,26 @@ Overlays only change *test friction* and per-environment wiring. **Encryption is
 never toggled** — there is no dev "encryption off" mode by design (see
 `docs/infrastructure-report-2026-07.md` §7).
 
+### Move ingress header and rate-status snippets to controller settings
+
+Before switching routes, prepare the serving ingress-nginx controller with
+`limit-req-status-code: "429"` and add `Permissions-Policy` to its existing
+`global-allowed-response-headers` list. The status setting applies to the whole
+controller. Preserve its other keys, including the Dev HTTP/2 mitigation and
+access-log settings, and verify the reload on every ready controller replica.
+For the standalone Dev controller, persist the keys in its own configuration.
+
+Then set `nginxController.useStandardRoutePolicies: true` for the application
+release. For bundled ingress-nginx, Helm retains both controller settings after
+activation. The application chart still supplies the same header values, rate
+thresholds and paths. Confirm the main and Element Call headers on ordinary and
+redirect responses, and use the approved rate-limit check to confirm `429`.
+
+The remaining snippets are migrated under
+[Helm #536](https://github.com/OpenResilienceInitiative/ORISO-Helm/issues/536).
+Until that work makes snippet disabling possible, setting the new option to
+`false` restores the legacy per-route annotations.
+
 ### SigNoz by environment
 
 With `values-dev.yaml`, `signoz.enabled=true` deploys SigNoz, enables
