@@ -762,6 +762,9 @@ nginxController:
   enabled: true
   # Two replicas, spread over nodes, with a PodDisruptionBudget (ORISO-Helm#544).
   replicas: 2
+  # See docs/ingress-controller-scope.md for staged upgrades of existing controllers.
+  scopeToReleaseNamespace: false
+  keepBothRbacScopes: false
 
 # IP anonymization proxy — replaces X-Real-IP/X-Forwarded-For with a
 # session-scoped UUID so no ORISO backend ever sees a real client IP.
