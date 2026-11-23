@@ -161,7 +161,7 @@ spec:
             {{- toYaml .Values.otelCollector.resources | nindent 12 }}
         {{- if $private }}
         - name: private-otlp
-          image: ghcr.io/nginx/nginx-unprivileged@sha256:44e74ca483234093081138b6d7b6f561d55557756a2deefc3a5056148defeb99
+          image: ghcr.io/nginx/nginx-unprivileged@sha256:8432c57ac86f178741af2b89948bd9087cb9df1c415bc1ab4d23735c4f0e3e61
           imagePullPolicy: IfNotPresent
           command: ["/usr/sbin/nginx"]
           args: ["-c", "/conf/private-otlp.conf", "-g", "daemon off;"]

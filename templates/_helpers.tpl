@@ -241,6 +241,10 @@ the bundled SigNoz chart is enabled, use its in-cluster collector service.
 {{- default (include "oriso.signozFullname" .) (get $signoz "orisoServiceNameOverride" | default "") -}}
 {{- end -}}
 
+{{- define "oriso.signozRouteGatewayName" -}}
+{{- printf "%s-route-gateway" (include "oriso.signozServiceName" . | trunc 49 | trimSuffix "-") -}}
+{{- end -}}
+
 {{- define "oriso.signozInternalApiUrl" -}}
 {{- $signoz := get .Values "signoz" | default dict -}}
 {{- $app := get $signoz "signoz" | default dict -}}

@@ -776,6 +776,10 @@ ipAnonymizer:
 # SigNoz backend, collection agents, and optional ORISO dashboards/alerts.
 signoz:
   enabled: false
+  orisoIngress:
+    # Prepare the route gateway before switching public SigNoz routes to it.
+    prepareRouteGateway: false
+    useRouteGateway: false
   # Separate Kubernetes identities for the protected Pre-Dev E2E workflow.
   orisoPreDevE2EAccess:
     enabled: false
