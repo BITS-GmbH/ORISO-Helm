@@ -150,11 +150,11 @@ def main() -> int:
     if messages.get("per_second", 0) < 1:
         failures.append(f"Dev rc_message.per_second {messages.get('per_second', 0)} < 1")
 
-    joins = dev.get("joinsPerRoom") or {}
-    if joins.get("burstCount", 0) < 3 * HOLDING_ROOM_COUNSELLORS:
-        failures.append(f"Dev joinsPerRoom.burstCount {joins.get('burstCount', 0)} < {3 * HOLDING_ROOM_COUNSELLORS}")
-    if joins.get("perSecond", 0) < 2:
-        failures.append(f"Dev joinsPerRoom.perSecond {joins.get('perSecond', 0)} < 2")
+    joins = dev.get("rc_joins_per_room") or {}
+    if joins.get("burst_count", 0) < 3 * HOLDING_ROOM_COUNSELLORS:
+        failures.append(f"Dev rc_joins_per_room.burst_count {joins.get('burst_count', 0)} < {3 * HOLDING_ROOM_COUNSELLORS}")
+    if joins.get("per_second", 0) < 2:
+        failures.append(f"Dev rc_joins_per_room.per_second {joins.get('per_second', 0)} < 2")
 
     if failures:
         print("\n".join(failures), file=sys.stderr)
