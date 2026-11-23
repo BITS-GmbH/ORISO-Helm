@@ -57,6 +57,9 @@ signoz:
     apiKeySecret:
       name: "signoz-observability-api-key"
   signoz:
+    # The existing Dev ext4 CSI volume uses fsGroupPolicy: File. Kubelet
+    # gives access to the root-owned SQLite data without copying the database.
+    devSQLiteFilesystemGroup: 65532
     env:
       signoz_global_external__url: "https://dev.oriso.org/signoz"
   clickhouse:

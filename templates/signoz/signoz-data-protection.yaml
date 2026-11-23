@@ -392,10 +392,17 @@ spec:
           tolerations:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          # signoz.db and its WAL belong to root, like the SigNoz container.
+          # Keep access to the backup destination. Share the source group
+          # without applying fsGroup ownership changes to either claim.
           securityContext:
             runAsUser: 0
             runAsGroup: 0
+            {{- with include "signoz.podSecurityContext" (dict "settings" $signozValues "global" .Values.global "externalDatabase" (dig "postgresql" "enabled" false $signoz)) | fromYaml }}
+            {{- if hasKey . "fsGroup" }}
+            supplementalGroups:
+              - {{ get . "fsGroup" }}
+            {{- end }}
+            {{- end }}
             seccompProfile:
               type: RuntimeDefault
           containers:
