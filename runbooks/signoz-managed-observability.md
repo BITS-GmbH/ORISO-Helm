@@ -316,8 +316,9 @@ Argo CD deletes the completed Job.
 - A failed hook remains available for diagnostics. Collect its logs, confirm
   the Job is terminal and all its Pods have terminated, then delete that failed
   Job with foreground propagation before retrying the full sync.
-- Verify that the Application records a successful Sync hook and the updated
-  workload is ready. Confirm end-to-end ingestion after collector activation.
+- Use the [Argo CD runtime acceptance](signoz-runtime-acceptance.md#argo-cd-migration-evidence)
+  to verify the successful Sync hook and workload readiness. Confirm end-to-end
+  ingestion after collector activation.
 
 The active replacement check for direct Helm upgrades uses live Kubernetes
 state. When deploying with direct Helm using the production values, set

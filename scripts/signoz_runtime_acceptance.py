@@ -29,6 +29,7 @@ import yaml
 SERVICE_NAME = "oriso-signoz-acceptance"
 METRIC_NAME = "oriso.signoz.acceptance"
 SUPPRESSED_LOG_BODY = "[ORISO log body suppressed by privacy policy]"
+ARGOCD_MIGRATION_JOB = "signoz-telemetrystore-migrator-sync"
 # Match the managed ClickHouse capacity alert's 2 GiB floor.
 MIN_CLICKHOUSE_UNRESERVED_BYTES = 2 * 1024**3
 CLICKHOUSE_UNKNOWN_SPACE = 2**64 - 1
@@ -458,7 +459,10 @@ def _check_runtime_readiness(
     release: str,
     timeout: str,
     require_k8s_infra: bool = False,
-) -> None:
+    *,
+    argocd_application: str | None = None,
+    argocd_migration_job: str = ARGOCD_MIGRATION_JOB,
+) -> dict[str, Any] | None:
     statefulsets = _current_clickhouse_statefulsets(runner, namespace, release)
 
     _kubectl(
@@ -484,6 +488,9 @@ def _check_runtime_readiness(
                 f"--timeout={timeout}",
             )
 
+    if argocd_application is not None:
+        return _check_argocd_migration(runner, namespace, argocd_application, argocd_migration_job)
+
     _kubectl(
         runner,
         namespace,
@@ -492,6 +499,79 @@ def _check_runtime_readiness(
         f"job/{_current_migration_job(runner, namespace, release)}",
         f"--timeout={timeout}",
     )
+    return None
+
+
+def _check_argocd_migration(
+    runner: Runner, namespace: str, application_ref: str, job_name: str,
+) -> dict[str, Any]:
+    app_namespace, app_name = application_ref.split("/")
+    application = json.loads(_kubectl(
+        runner, app_namespace, "get", "applications.argoproj.io", app_name, "-o", "json",
+    ))
+    status = application.get("status", {})
+    comparison = status.get("sync", {})
+    compared_to = comparison.get("comparedTo", {})
+    state = status.get("operationState", {})
+    operation = state.get("operation", {}).get("sync")
+    result = state.get("syncResult", {})
+    spec = application.get("spec", {})
+    destination = spec.get("destination", {})
+    if (
+        destination.get("namespace") != namespace
+        or destination.get("server") != "https://kubernetes.default.svc"
+        or compared_to.get("destination") != destination
+    ):
+        raise RuntimeError(
+            f"Argo CD Application {application_ref} must target the local cluster and namespace {namespace}"
+        )
+    if (
+        application.get("metadata", {}).get("deletionTimestamp")
+        or application.get("operation")
+        or comparison.get("status") != "Synced"
+        or state.get("phase") != "Succeeded"
+        or operation is None
+        or any(operation.get(key) for key in ("dryRun", "resources", "manifests"))
+    ):
+        raise RuntimeError(f"Argo CD Application {application_ref} has no current successful full sync")
+
+    # Check the applied source configuration as well as its resolved revision.
+    # An updated Helm source can change values at the same Git or chart revision.
+    if spec.get("sources"):
+        sources = spec["sources"]
+        revisions = comparison.get("revisions", [])
+        current = (
+            len(revisions) == len(sources) and all(revisions)
+            and result.get("revisions") == revisions
+            and compared_to.get("sources") == result.get("sources") == sources
+        )
+    else:
+        source = spec.get("source")
+        revision = comparison.get("revision")
+        revisions = [revision]
+        current = (
+            source and revision and result.get("revision") == revision
+            and compared_to.get("source") == result.get("source") == source
+        )
+    if not current:
+        raise RuntimeError(f"Argo CD Application {application_ref} has no successful sync for its current sources and revisions")
+
+    identity = {
+        "group": "batch",
+        "version": "v1",
+        "kind": "Job",
+        "namespace": namespace,
+        "name": job_name,
+        "hookType": "Sync",
+        "syncPhase": "Sync",
+    }
+    matching_hooks = [
+        resource for resource in result.get("resources", [])
+        if all(resource.get(key) == value for key, value in identity.items())
+    ]
+    if len(matching_hooks) != 1 or matching_hooks[0].get("hookPhase") != "Succeeded":
+        raise RuntimeError(f"Argo CD Application {application_ref} has no successful Sync hook for Job {namespace}/{job_name}")
+    return {"application": application_ref, "job": job_name, "revisions": revisions}
 
 
 def _current_migration_job(runner: Runner, namespace: str, release: str) -> str:
@@ -1093,6 +1173,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--environment", required=True)
     parser.add_argument("--cluster-name")
     parser.add_argument("--ssh-host")
+    parser.add_argument(
+        "--argocd-application", metavar="NAMESPACE/NAME",
+        help="Check the in-cluster Argo CD Application for a completed migration Sync hook",
+    )
+    parser.add_argument(
+        "--argocd-migration-job",
+        help=f"Rendered Argo CD migration Job name when it differs from {ARGOCD_MIGRATION_JOB}",
+    )
     parser.add_argument("--signoz-url", help="Query the trusted HTTPS SigNoz API in Java signal mode")
     parser.add_argument("--since-unix-ms", type=int, help="Earliest admitted sample in Java signal mode")
     parser.add_argument("--timeout", default="10m")
@@ -1125,6 +1213,13 @@ def parse_args() -> argparse.Namespace:
         parser.error("--signoz-url and --since-unix-ms require --check-java-signals")
     if args.signoz_url is not None and args.ssh_host is not None:
         parser.error("--signoz-url and --ssh-host select different query transports")
+    if args.argocd_application is not None:
+        if not re.fullmatch(r"[a-z0-9-]+/[a-z0-9.-]+", args.argocd_application):
+            parser.error("--argocd-application must be NAMESPACE/NAME")
+        if args.check_java_signals or args.check_clickhouse_retention:
+            parser.error("--argocd-application requires a readiness or full acceptance check")
+    if args.argocd_migration_job is not None and args.argocd_application is None:
+        parser.error("--argocd-migration-job requires --argocd-application")
     return args
 
 
@@ -1153,12 +1248,14 @@ def main() -> None:
     require_k8s_infra = not args.skip_k8s_infra
     if require_k8s_infra and not args.cluster_name:
         raise RuntimeError("--cluster-name is required unless --skip-k8s-infra is set")
-    _check_runtime_readiness(
+    argocd_migration = _check_runtime_readiness(
         runner,
         args.namespace,
         args.release,
         args.timeout,
         require_k8s_infra=require_k8s_infra,
+        argocd_application=args.argocd_application,
+        argocd_migration_job=args.argocd_migration_job or ARGOCD_MIGRATION_JOB,
     )
     _check_collector_config(runner, args.namespace, args.release)
 
@@ -1171,6 +1268,8 @@ def main() -> None:
         "k8sInfraReadiness": "passed" if require_k8s_infra else "skipped",
         "clickhouseRetention": "skipped",
     }
+    if argocd_migration is not None and args.argocd_application is not None:
+        report["argocdMigration"] = argocd_migration
     if args.skip_synthetic:
         report["clickhouseCapacity"] = "skipped"
         report["syntheticReadback"] = "skipped"
