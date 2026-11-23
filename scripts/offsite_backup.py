@@ -229,11 +229,17 @@ def push(config, sftp, now=None):
             names = remote | {run.name for run, _ in local}
             candidates = [(n, w) for n in names if (w := run_stamp(n, prefix=prefix))]
             ladder = select_keep(candidates, retention["daily"], retention["weekly"])
-            uploaded = 0
+            uploaded, rejected = 0, False
             verified_archive_at = None
             for run, files in local:
                 if run.name in ladder and run.name not in remote:
-                    upload_run(sftp, base, prefix, run, files)
+                    try:
+                        upload_run(sftp, base, prefix, run, files)
+                    except OffsiteError as error:
+                        # One bad run must not hold back the store's other runs or its pruning.
+                        failures.append(f"{prefix}: {run.name}: {error}")
+                        rejected = True
+                        continue
                     remote.add(run.name)
                     uploaded += 1
                     archive_at = run_stamp(run.name, prefix=prefix)
@@ -244,7 +250,10 @@ def push(config, sftp, now=None):
             deletions -= pruned
             # Only a run the ladder wants but the box does not hold yet is protected from local clean-up.
             local_removed = prune_local(source, ladder - remote, retention["localKeepDays"], now)
-            report[prefix] = {"uploaded": uploaded, "prunedRemote": pruned, "prunedLocal": local_removed}
+            if rejected:
+                # Leave the store out so its receipt is carried, never read as a clean copy.
+                continue
+            report[prefix] ={"uploaded": uploaded, "prunedRemote": pruned, "prunedLocal": local_removed}
             if verified_archive_at is not None:
                 report[prefix]["archiveAt"] = verified_archive_at.isoformat(timespec="seconds")
                 report[prefix]["complete"] = True

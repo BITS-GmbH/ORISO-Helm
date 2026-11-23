@@ -552,6 +552,20 @@ class OffsiteBackupTest(unittest.TestCase):
         self.assertTrue(mislabeled.exists())
         self.assertFalse(any(line.startswith("put ") for line in self.log.read_text().splitlines()))
 
+    def test_a_rejected_run_does_not_hold_back_the_other_runs_of_its_store(self):
+        bad = self.add_run("mariadb", self.now - timedelta(days=2))
+        (bad / "old-dump.sql.gz").write_bytes(b"legacy fixture")
+        good = self.add_run("mariadb", self.now - timedelta(hours=1))
+
+        report, problems = offsite.push(offsite.load_config(self.config_path), self.sftp(), self.now)
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn(bad.name, problems[0])
+        self.assertEqual(self.remote("mariadb"), [good.name])
+        # Kept out of the report, so the reader never treats the store as a clean copy.
+        self.assertNotIn("mariadb", report)
+        self.assertTrue(bad.exists())
+
     def test_restore_keeps_matching_mariadb_receipt_as_metadata(self):
         run = self.add_run("mariadb", self.now - timedelta(hours=1))
         file = run / "dump.sql.gz.age"
