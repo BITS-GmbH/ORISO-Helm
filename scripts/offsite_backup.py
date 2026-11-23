@@ -15,12 +15,17 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 RUN_NAME = re.compile(r"^(?P<prefix>[a-z][a-z0-9-]*)-(?P<stamp>\d{8}T\d{6}Z)(?:-[A-Za-z0-9_]+)?$")
 SAFE_PATH = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/-]*$")
 LS_LONG = re.compile(r"^\S+\s+(?:\d+|\?)\s+\S+\s+\S+\s+(?P<size>\d+)\s+\w+\s+\d+\s+[\d:]+\s+(?P<name>.+)$")
 SFTP_TIMEOUT_SECONDS = 1800
 MAX_DELETIONS_PER_RUN = 60
+MAX_STATUS_BYTES = 16 * 1024
+UTC_ISO = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|\+00:00)"
+)
 RECEIPT = "SHA256SUMS"
 MARIADB_RECEIPT = "backup-receipt.json"
 AGE_FORMAT_LINE = b"age-encryption.org/v1\n"
@@ -31,11 +36,14 @@ class OffsiteError(RuntimeError):
     pass
 
 
-def run_stamp(name):
+def run_stamp(name, *, prefix=None):
     match = RUN_NAME.fullmatch(name)
-    if not match:
+    if not match or (prefix is not None and match["prefix"] != prefix):
         return None
-    return datetime.strptime(match["stamp"], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    try:
+        return datetime.strptime(match["stamp"], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def select_keep(runs, daily, weekly):
@@ -118,8 +126,7 @@ def local_runs(source):
         raise OffsiteError(f"Backup folder for {source['prefix']} does not exist")
     runs = []
     for entry in sorted(root.iterdir()):
-        match = RUN_NAME.fullmatch(entry.name)
-        if entry.is_dir() and not entry.is_symlink() and match and match["prefix"] == source["prefix"]:
+        if entry.is_dir() and not entry.is_symlink() and run_stamp(entry.name, prefix=source["prefix"]):
             files = sorted(p for p in entry.iterdir() if p.is_file() and p.name != RECEIPT)
             if files and all(p.stat().st_size > 0 for p in files):
                 runs.append((entry, files))
@@ -186,7 +193,7 @@ def upload_run(sftp, base, prefix, run, files):
 
 def prune_remote(sftp, base, prefix, retention, deletions_left):
     names = sftp.names(f"{base}/{prefix}")
-    runs = [(n, w) for n in (names or []) if (w := run_stamp(n))]
+    runs = [(n, w) for n in (names or []) if (w := run_stamp(n, prefix=prefix))]
     if not runs:
         return 0
     keep = select_keep(runs, retention["daily"], retention["weekly"])
@@ -219,21 +226,28 @@ def push(config, sftp, now=None):
         try:
             remote = set(sftp.names(f"{base}/{prefix}") or [])
             local = local_runs(source)
-            ladder = select_keep(
-                [(n, run_stamp(n)) for n in remote | {run.name for run, _ in local} if run_stamp(n)],
-                retention["daily"], retention["weekly"],
-            )
+            names = remote | {run.name for run, _ in local}
+            candidates = [(n, w) for n in names if (w := run_stamp(n, prefix=prefix))]
+            ladder = select_keep(candidates, retention["daily"], retention["weekly"])
             uploaded = 0
+            verified_archive_at = None
             for run, files in local:
                 if run.name in ladder and run.name not in remote:
                     upload_run(sftp, base, prefix, run, files)
                     remote.add(run.name)
                     uploaded += 1
+                    archive_at = run_stamp(run.name, prefix=prefix)
+                    if (archive_at is not None and archive_at <= now
+                            and any(path.name.endswith(".age") for path in files)):
+                        verified_archive_at = max(verified_archive_at or archive_at, archive_at)
             pruned = prune_remote(sftp, base, prefix, retention, deletions)
             deletions -= pruned
             # Only a run the ladder wants but the box does not hold yet is protected from local clean-up.
             local_removed = prune_local(source, ladder - remote, retention["localKeepDays"], now)
             report[prefix] = {"uploaded": uploaded, "prunedRemote": pruned, "prunedLocal": local_removed}
+            if verified_archive_at is not None:
+                report[prefix]["archiveAt"] = verified_archive_at.isoformat(timespec="seconds")
+                report[prefix]["complete"] = True
         except OffsiteError as error:
             failures.append(f"{prefix}: {error}")
     return report, failures
@@ -245,18 +259,111 @@ def check(config, sftp, now=None):
     problems, newest = [], {}
     for source in config["sources"]:
         prefix = source["prefix"]
-        runs = [(n, w) for n in (sftp.names(f"{base}/{prefix}") or []) if (w := run_stamp(n))]
+        runs = [
+            (name, archive_at) for name in sftp.names(f"{base}/{prefix}") or []
+            if (archive_at := run_stamp(name, prefix=prefix)) is not None and archive_at <= now
+        ]
         if not runs:
             problems.append(f"{prefix}: no off-site run")
             continue
         name, when = max(runs, key=lambda r: r[1])
         files = sftp.sizes(f"{base}/{prefix}/{name}")
-        newest[prefix] = {"run": name, "ageHours": round((now - when).total_seconds() / 3600, 1)}
+        complete = RECEIPT in files and any(file.endswith(".age") for file in files) and 0 not in files.values()
+        newest[prefix] = {
+            "run": name,
+            "ageHours": round((now - when).total_seconds() / 3600, 1),
+            "archiveAt": when.isoformat(timespec="seconds"),
+            "complete": complete,
+        }
         if now - when > limit:
             problems.append(f"{prefix}: newest off-site run {name} is older than {limit}")
-        if RECEIPT not in files or not any(f.endswith(".age") for f in files) or 0 in files.values():
+        if not complete:
             problems.append(f"{prefix}: newest off-site run {name} is incomplete")
     return newest, problems
+
+
+def unique_status_object(fields):
+    result = dict(fields)
+    if len(result) != len(fields):
+        raise ValueError("duplicate status fields")
+    return result
+
+
+def status_timestamp(value):
+    if not isinstance(value, str) or not UTC_ISO.fullmatch(value):
+        raise ValueError("expected UTC ISO timestamp")
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def preserve_verified_uploads(path, status):
+    """Keep verified receipts across interrupted runs without changing their timestamps."""
+    try:
+        with path.open("rb") as previous_file:
+            data = previous_file.read(MAX_STATUS_BYTES + 1)
+        if len(data) > MAX_STATUS_BYTES:
+            return
+        previous = json.loads(data, object_pairs_hook=unique_status_object)
+        if (
+            previous["command"] != "push" or type(previous["ok"]) is not bool
+            or not isinstance(previous["report"], dict)
+        ):
+            return
+        previous_at = status_timestamp(previous["at"])
+        if previous_at > status_timestamp(status["at"]):
+            return
+    except (OSError, KeyError, TypeError, ValueError, RecursionError):
+        return
+
+    carried = previous.get("carriedUploads", {})
+    if not isinstance(carried, dict):
+        carried = {}
+    previous_uploads = {**carried, **previous["report"]}
+    carry_forward = {}
+    for prefix, old in previous_uploads.items():
+        entry = status["report"].get(prefix)
+        if (
+            (entry is not None and entry["uploaded"] != 0)
+            or (entry is None and status["ok"])
+            or not isinstance(old, dict) or old.get("complete") is not True
+            or type(old.get("uploaded")) is not int or old["uploaded"] < 0
+        ):
+            continue
+        verified = old.get("verifiedAt")
+        if "verifiedAt" not in old and old["uploaded"] > 0 and prefix in previous["report"]:
+            verified = previous["at"]
+        try:
+            verified_at = status_timestamp(verified)
+            archive_at = status_timestamp(old["archiveAt"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not archive_at <= verified_at <= previous_at:
+            continue
+        receipt = {"archiveAt": old["archiveAt"], "complete": True, "verifiedAt": verified}
+        if entry is None:
+            # The current run did not report this store. Keep the receipt outside the active
+            # report so the reader cannot interpret a failed copy as a successful no-op.
+            carry_forward[prefix] = {"uploaded": 0, **receipt}
+        else:
+            entry.update(receipt)
+    if carry_forward:
+        status["carriedUploads"] = carry_forward
+
+
+def write_status_file(path, status):
+    if status.get("command") == "push":
+        preserve_verified_uploads(path, status)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False,
+        ) as output:
+            temporary_path = Path(output.name)
+            output.write(json.dumps(status, indent=1) + "\n")
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def main(argv=None):
@@ -273,13 +380,16 @@ def main(argv=None):
             report, problems = push(config, sftp)
         else:
             report, problems = check(config, sftp)
-    except (OffsiteError, subprocess.TimeoutExpired, OSError) as error:
+    except OffsiteError as error:
         report, problems = {}, [str(error)]
+    except subprocess.TimeoutExpired:
+        report, problems = {}, ["Off-site backup command timed out"]
+    except OSError:
+        report, problems = {}, ["Could not access required off-site backup resources"]
     status = {"command": args.command, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "ok": not problems, "report": report, "problems": problems}
     if args.status_file:
-        args.status_file.parent.mkdir(parents=True, exist_ok=True)
-        args.status_file.write_text(json.dumps(status, indent=1) + "\n", encoding="utf-8")
+        write_status_file(args.status_file, status)
     print(json.dumps(status))
     return 1 if problems else 0
 

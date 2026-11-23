@@ -183,7 +183,8 @@ def read_receipt(path, expected_names):
 
 
 def fetch_newest(sftp, base, prefix, target):
-    names = [(n, w) for n in (sftp.names(f"{base}/{prefix}") or []) if (w := OFFSITE.run_stamp(n))]
+    entries = sftp.names(f"{base}/{prefix}") or []
+    names = [(n, w) for n in entries if (w := OFFSITE.run_stamp(n, prefix=prefix))]
     if not names:
         raise RuntimeError("no off-site run found")
     run = max(names, key=lambda r: r[1])[0]
