@@ -120,12 +120,6 @@ data:
       - server_name: "matrix.org"
         accept_keys_insecurely: true
 
-    # TURN/STUN configuration for WebRTC calls
-    turn_uris:
-      - "stun:stun.l.google.com:19302"
-      - "stun:stun1.l.google.com:19302"
-    turn_allow_guests: true
-
     # KDG epic #282 task 2: the rc_* blocks previously set every rate limit to
     # 100000/s, which effectively disabled Synapse's built-in abuse protection
     # (registration floods, login/credential-stuffing attempts, join/invite
