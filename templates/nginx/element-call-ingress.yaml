@@ -2,7 +2,6 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   annotations:
-    kubernetes.io/ingress.class: nginx
     {{- include "oriso.ingress.permissionsPolicyAnnotation" (dict "root" . "origin" (printf "https://%s" .Values.global.domainName) "configMap" "permissions-policy-main-host") | nindent 4 }}
     nginx.ingress.kubernetes.io/permanent-redirect: https://{{ .Values.global.domainName
       }}/room/

@@ -28,6 +28,7 @@ def check_routes(legacy, active):
         previous, resulting = legacy[("Ingress", name)], active[("Ingress", name)]
         old = previous["metadata"]["annotations"].copy()
         new = resulting["metadata"]["annotations"].copy()
+        assert "kubernetes.io/ingress.class" not in old and "kubernetes.io/ingress.class" not in new
         snippet = old.pop(PREFIX + "configuration-snippet")
         assert ("ConfigMap", headers_name) in active, f"{name}: missing standard response header ConfigMap"
         config_map = active[("ConfigMap", headers_name)]
