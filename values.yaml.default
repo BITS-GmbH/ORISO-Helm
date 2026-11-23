@@ -517,6 +517,9 @@ online-counseling-redis:
 
 # Keycloak
 online-counseling-keycloak:
+  # Set 2 or more after validating shared database capacity and peer traffic.
+  # Multiple replicas use JDBC discovery and private readiness checks.
+  replicas: 1
   imageName: "ghcr.io/openresilienceinitiative/oriso-keycloak"
   imageVersion: "dev"
 
