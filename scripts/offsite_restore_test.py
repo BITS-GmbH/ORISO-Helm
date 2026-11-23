@@ -137,17 +137,29 @@ def restore_postgres(files, identity, marker, name):
     wait_until(name, ["pg_isready", "-U", "postgres"])
     time.sleep(3)  # the image restarts once after its init scripts
     wait_until(name, ["pg_isready", "-U", "postgres"])
+    psql = ["psql", "-X", "-U", "postgres", "-v", "ON_ERROR_STOP=1"]
     for path in files:
-        pipe_into(path, identity, name, ["psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-q"])
-    tables = int(docker("exec", name, "psql", "-U", "postgres", "-At", "-c",
-                        "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'").stdout.strip())
+        pipe_into(path, identity, name, [*psql, "-q"])
+
+    def query(sql):
+        return docker("exec", name, *psql, "-qAt", "-c", sql).stdout.strip()
+
+    tables = int(query("SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"))
     if not tables:
         raise RuntimeError("no tables were restored")
-    marker_rows = None
+    evidence = {"publicTables": tables, "markerRows": None}
+    if query("SELECT to_regclass('public.e2e_one_time_keys_json') IS NOT NULL") == "t":
+        # Older archives may still contain stale Synapse one-time keys.
+        one_time_keys = int(query(
+            "TRUNCATE TABLE public.e2e_one_time_keys_json; "
+            "SELECT COUNT(*) FROM public.e2e_one_time_keys_json"
+        ))
+        if one_time_keys != 0:
+            raise RuntimeError("restored Synapse one-time keys were not cleared")
+        evidence["oneTimeKeyRows"] = one_time_keys
     if marker:
-        marker_rows = int(docker("exec", name, "psql", "-U", "postgres", "-At", "-c",
-                                 f"SELECT count(*) FROM {marker}").stdout.strip())
-    return {"publicTables": tables, "markerRows": marker_rows}
+        evidence["markerRows"] = int(query(f"SELECT count(*) FROM {marker}"))
+    return evidence
 
 
 RESTORERS = {"mariadb": restore_mariadb, "mongodb": restore_mongodb, "matrix-postgres": restore_postgres}

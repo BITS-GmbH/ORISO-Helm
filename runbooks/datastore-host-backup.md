@@ -61,7 +61,25 @@ age --decrypt -i ~/oriso-backup-identity.txt mongodb.archive.gz.age | gunzip | m
 age --decrypt -i ~/oriso-backup-identity.txt synapse.sql.gz.age | gunzip | psql -X --set ON_ERROR_STOP=on "$SCRATCH_POSTGRES_URI" || echo "PostgreSQL restore FAILED"
 ```
 
-Restore into a scratch instance with no mail, webhook or application access, never over Dev.
+Restore into a fresh scratch instance with no mail, webhook or application access.
+
+The scheduled Synapse dump keeps the one-time-key table schema and leaves its
+rows out of the archive. Synapse clients upload fresh one-time keys after
+recovery. See the [Synapse backup guidance](https://element-hq.github.io/synapse/latest/usage/administration/backups.html#synapse-specfic-details).
+
+Older dumps can contain one-time keys that were already used. After a
+successful PostgreSQL restore and before starting Synapse, clear those rows
+and verify the count in the isolated destination database:
+
+```bash
+: "${SCRATCH_POSTGRES_URI:?Set the isolated PostgreSQL destination}"
+psql -X --set ON_ERROR_STOP=on "$SCRATCH_POSTGRES_URI" \
+  -c 'TRUNCATE TABLE public.e2e_one_time_keys_json; SELECT count(*) AS one_time_keys FROM public.e2e_one_time_keys_json;'
+```
+
+Proceed only after the command succeeds and reports zero rows. The isolated
+off-site restore tester performs this cleanup in its disposable PostgreSQL
+container before reporting a successful restore.
 
 ## Notes
 
