@@ -614,9 +614,20 @@ clickhouseOperator:
     # signoz.io/port: '8888'
     # signoz.io/scrape: 'true'
 
-  # -- Clickhouse Operator pod-level security attributes and common container settings.
-  podSecurityContext: {}
-    # fsGroup: 2000
+  # -- Security context used by both ClickHouse operator processes.
+  podSecurityContext:
+    runAsNonRoot: true
+    # Numeric form of the nobody identity in the operator and exporter images.
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  # -- Container-level security context for the operator and metrics exporter.
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+    readOnlyRootFilesystem: true
 
   # Clickhouse Operator secret for ClickHouse user password
   secret:
