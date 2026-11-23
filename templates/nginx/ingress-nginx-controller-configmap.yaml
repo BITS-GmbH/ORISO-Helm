@@ -10,6 +10,10 @@ metadata:
 data:
   allow-snippet-annotations: "true"
   annotations-risk-level: "Critical"
+  {{- if eq (include "oriso.ingress.standardRoutePolicies" .) "true" }}
+  global-allowed-response-headers: "Permissions-Policy"
+  limit-req-status-code: "429"
+  {{- end }}
   # KDG epic #282 task 7: the ingress-nginx default upstream log format logs
   # $remote_addr (client IP) and $request, which embeds the full request URI
   # including the query string — magic-link / password-reset tokens travel as
