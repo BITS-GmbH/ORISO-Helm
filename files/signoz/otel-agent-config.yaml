@@ -222,7 +222,8 @@ receivers:
     extra_metadata_labels:
     - container.id
     - k8s.volume.type
-    insecure_skip_verify: true
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    insecure_skip_verify: false
     k8s_api_config:
       auth_type: serviceAccount
     metric_groups:
