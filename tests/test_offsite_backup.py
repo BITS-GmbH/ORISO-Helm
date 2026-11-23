@@ -1,6 +1,7 @@
 """Exercise the off-site copy, retention and freshness check against a fake sftp client."""
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import importlib.util
 import json
 import os
@@ -84,7 +85,7 @@ class OffsiteBackupTest(unittest.TestCase):
     def add_run(self, prefix, when, payload=b"ciphertext"):
         run = self.local / prefix / f"{prefix}-{stamp(when)}-abc123"
         run.mkdir()
-        (run / "dump.sql.gz.age").write_bytes(payload)
+        (run / "dump.sql.gz.age").write_bytes(b"age-encryption.org/v1\n" + payload)
         return run
 
     def sftp(self, mode="ok"):
@@ -192,7 +193,7 @@ class OffsiteBackupTest(unittest.TestCase):
         offsite.push(offsite.load_config(self.config_path), self.sftp(), self.now)
         run, files = restore.fetch_newest(self.sftp(), "oriso-dev", "mongodb", self.root / "fetched")
         self.assertNotEqual(run, older.name)
-        self.assertEqual([p.read_bytes() for p in files], [b"new-ciphertext"])
+        self.assertEqual([p.read_bytes() for p in files], [b"age-encryption.org/v1\nnew-ciphertext"])
         self.assertEqual(oct((self.root / "fetched").stat().st_mode & 0o777), "0o700")
 
     def test_restore_test_rejects_a_tampered_archive(self):
@@ -253,6 +254,65 @@ class OffsiteBackupTest(unittest.TestCase):
             self.config_path.write_text(json.dumps({**self.config, **change}))
             with self.assertRaises(offsite.OffsiteError):
                 offsite.load_config(self.config_path)
+
+    def test_push_rejects_unencrypted_files_without_transferring_the_run(self):
+        now = self.now - timedelta(hours=1)
+        mixed = self.add_run("mariadb", now)
+        (mixed / "old-dump.sql.gz").write_bytes(b"legacy fixture")
+        mislabeled = self.add_run("mongodb", now)
+        (mislabeled / "dump.sql.gz.age").write_bytes(b"plain fixture with an age suffix")
+
+        report, problems = offsite.push(offsite.load_config(self.config_path), self.sftp(), self.now)
+
+        self.assertEqual(len(problems), 2)
+        self.assertEqual(report, {})
+        self.assertEqual(self.remote("mariadb"), [])
+        self.assertEqual(self.remote("mongodb"), [])
+        self.assertTrue(mixed.exists())
+        self.assertTrue(mislabeled.exists())
+        self.assertFalse(any(line.startswith("put ") for line in self.log.read_text().splitlines()))
+
+    def test_restore_keeps_matching_mariadb_receipt_as_metadata(self):
+        run = self.add_run("mariadb", self.now - timedelta(hours=1))
+        file = run / "dump.sql.gz.age"
+        receipt = {"version": 1, "run": run.name, "archives": {
+            file.name: hashlib.sha256(file.read_bytes()).hexdigest(),
+        }}
+        (run / "backup-receipt.json").write_text(json.dumps(receipt, sort_keys=True) + "\n")
+
+        _, problems = offsite.push(offsite.load_config(self.config_path), self.sftp(), self.now)
+        self.assertEqual(problems, [])
+        fetched = self.root / "fetched"
+        name, archives = restore.fetch_newest(self.sftp(), "oriso-dev", "mariadb", fetched)
+
+        self.assertEqual(name, run.name)
+        self.assertEqual([path.name for path in archives], [file.name])
+        self.assertEqual(json.loads((fetched / "backup-receipt.json").read_text()), receipt)
+
+    def test_push_rejects_a_mismatched_mariadb_receipt_before_transfer(self):
+        run = self.add_run("mariadb", self.now - timedelta(hours=1))
+        (run / "backup-receipt.json").write_text(json.dumps({
+            "version": 1, "run": run.name, "archives": {"dump.sql.gz.age": "0" * 64},
+        }, sort_keys=True) + "\n")
+
+        _, problems = offsite.push(offsite.load_config(self.config_path), self.sftp(), self.now)
+
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(self.remote("mariadb"), [])
+        self.assertTrue(run.exists())
+
+    def test_restore_rejects_a_duplicate_checksum_entry(self):
+        run = self.add_run("mongodb", self.now - timedelta(hours=1))
+        _, problems = offsite.push(offsite.load_config(self.config_path), self.sftp(), self.now)
+        self.assertEqual(problems, [])
+        receipt = self.box / "oriso-dev" / "mongodb" / run.name / "SHA256SUMS"
+        receipt.write_text(receipt.read_text() * 2)
+
+        with self.assertRaisesRegex(RuntimeError, "duplicate archive entry in SHA256SUMS"):
+            restore.fetch_newest(self.sftp(), "oriso-dev", "mongodb", self.root / "fetched")
+        gets = [line for line in self.log.read_text().splitlines() if line.startswith("get ")]
+        self.assertEqual(len(gets), 1)
+        self.assertIn("/SHA256SUMS ", gets[0])
 
 
 if __name__ == "__main__":
