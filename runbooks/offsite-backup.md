@@ -99,13 +99,25 @@ Rehearsals with synthetic data add `--marker mariadb=schema.table --marker mongo
 ## Monitor the backup jobs
 
 The existing [journal reader](signoz-dev.md#read-completed-checks-for-the-incident-consumer)
-has a separate scope for the copy and verification services. On the approved
-backup host, use a reader account with access to the system journal and the
-two backup status receipts. Give the backup scope its own cursor.
+has a separate scope for the copy and verification services. Give the backup
+scope its own cursor.
+
+The two status receipts are root-only (`0600` in the `0700` state directory),
+so an unprivileged reader gets `unreadable-probe`. On the approved backup host,
+install the reader next to the copy script as a root-owned file and let the
+reader account run only that script as root. For example, in
+`/etc/sudoers.d/oriso-offsite-reader` (edit with `visudo -f`):
+
+```text
+oriso-reader ALL=(root) NOPASSWD: /usr/bin/python3 -I /opt/oriso/offsite-backup/signoz_check_journal.py --scope offsite-backup *
+```
+
+Every mode of the reader only reads the journal, systemd state and the
+receipts. Then poll with:
 
 ```sh
-python3 scripts/signoz_check_journal.py --scope offsite-backup --since '26 hours ago'
-python3 scripts/signoz_check_journal.py --scope offsite-backup --cursor "$last_backup_cursor"
+sudo -n /usr/bin/python3 -I /opt/oriso/offsite-backup/signoz_check_journal.py --scope offsite-backup --since '26 hours ago'
+sudo -n /usr/bin/python3 -I /opt/oriso/offsite-backup/signoz_check_journal.py --scope offsite-backup --cursor "$last_backup_cursor"
 ```
 
 The completion page follows the existing machine, boot, unit and invocation

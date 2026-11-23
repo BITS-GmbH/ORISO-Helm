@@ -333,6 +333,15 @@ class BackupFreshnessTest(TestCase):
         push["report"] = {"mariadb": evidence}
         self.assertEqual(self.snapshot(earlier, push)["stores"]["mariadb"]["reason"], "fresh-archive")
 
+    def test_unreadable_status_names_the_permission_fault(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "check.json"
+            path.write_text(json.dumps(self.producer_status()), encoding="utf-8")
+            with patch.object(Path, "open", side_effect=PermissionError):
+                result = reader.read_backup_freshness(path, push_path=path, now=self.now)
+        self.assertEqual(result["probe"], {"state": "UNKNOWN", "reason": "unreadable-probe", "checked_at": None})
+        self.assertTrue(all(row["state"] == "UNKNOWN" for row in result["stores"].values()))
+
     def test_duplicate_or_oversized_status_is_unknown(self):
         valid = json.dumps(self.producer_status())
         with TemporaryDirectory() as directory:
