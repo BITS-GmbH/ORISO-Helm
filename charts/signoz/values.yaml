@@ -1541,20 +1541,20 @@ otelCollector:
           app.kubernetes.io/component: otel-collector
   # otelCollector.podSecurityContext -- Pod-level security context.
   # @section -- Otel Collector
-  # @default -- {}
-  podSecurityContext: {}
-  # fsGroup: 2000
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
 
   # otelCollector.securityContext -- Container-level security context.
   # @section -- Otel Collector
-  # @default -- {}
-  securityContext: {}
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+    readOnlyRootFilesystem: true
 
   # otelCollector.autoscaling -- Autoscaling configuration (HPA).
   # @section -- Otel Collector
