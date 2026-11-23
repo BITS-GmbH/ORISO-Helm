@@ -770,6 +770,9 @@ ipAnonymizer:
   # Must stay 1 until sessions are shared between pods; the render fails above 1 (ORISO-Helm#544).
   replicas: 1
   image: "ghcr.io/openresilienceinitiative/ip-anonymizer:latest"
+  # Before deploying the stateless image, name an existing Secret in the release
+  # namespace with ANON_SESSION_KEY set to a standard-base64 32-byte random key.
+  sessionKeySecretName: ""
 
 
 # ---------- Observability ----------------------------------------------------------------

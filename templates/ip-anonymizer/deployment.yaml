@@ -26,6 +26,14 @@ spec:
         - name: ip-anonymizer
           image: {{ .Values.ipAnonymizer.image | quote }}
           imagePullPolicy: {{ include "oriso.imagePullPolicy" . | quote }}
+          {{- with .Values.ipAnonymizer.sessionKeySecretName }}
+          env:
+            - name: ANON_SESSION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . | quote }}
+                  key: ANON_SESSION_KEY
+          {{- end }}
           ports:
             - containerPort: 8080
           livenessProbe:
