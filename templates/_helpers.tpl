@@ -622,6 +622,26 @@ An unset or empty value means off. Returns "true" or "false".
 {{- end -}}
 
 {{/*
+tenantService.tenantDeletionFinishEnabled as a real boolean, read once for both services
+(ORISO-Admin#1525). TenantService requires TENANT_DELETION when it is on; UserService finishes Träger
+deletions when it is on. Same rules as oriso.deletionAuditOutboxEnabled: a quoted value fails at
+render time, unset or empty means off. Returns "true" or "false".
+*/}}
+{{- define "oriso.tenantDeletionFinishEnabled" -}}
+{{- $value := dig "tenantDeletionFinishEnabled" false (.Values.tenantService | default dict) -}}
+{{- if kindIs "invalid" $value -}}
+{{- $value = false -}}
+{{- end -}}
+{{- if and (kindIs "string" $value) (eq $value "") -}}
+{{- $value = false -}}
+{{- end -}}
+{{- if not (kindIs "bool" $value) -}}
+{{- fail (printf "tenantService.tenantDeletionFinishEnabled must be true or false without quotes (got %s %q). Use --set, not --set-string, and do not quote it in a values file." (kindOf $value) (toString $value)) -}}
+{{- end -}}
+{{- ternary "true" "false" $value -}}
+{{- end -}}
+
+{{/*
 Pod securityContext for chart workloads (ORISO-Helm#539). Arguments (dict):
   user        UID to run as; 0 or unset keeps the image user (root pods, see call site)
   group       GID, defaults to user
