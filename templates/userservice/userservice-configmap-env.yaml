@@ -109,6 +109,8 @@ data:
   TASK_IDENTITY_MODEL: {{ if $scenarioEnabled }}"FIVE_ACTORS"{{ else }}"LEGACY"{{ end }}
   # OBP 2.1 #130: pull agency purges only once AgencyService serves its outbox (same switch).
   DELETION_AUDIT_AGENCYOUTBOX_ENABLED: {{ include "oriso.deletionAuditOutboxEnabled" . | quote }}
+  # ORISO-Admin#1525: finish Träger deletions only once TenantService requires TENANT_DELETION.
+  DELETION_TENANTFINISH_ENABLED: {{ include "oriso.tenantDeletionFinishEnabled" . | quote }}
   {{- if $scenarioEnabled }}
   IDENTITY_SETUP_CLIENT_ID: {{ $setupClient | quote }}
   IDENTITY_SETUP_SERVICE_SUBJECT: {{ $setupSubject | quote }}

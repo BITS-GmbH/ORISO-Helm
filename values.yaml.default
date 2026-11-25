@@ -591,6 +591,11 @@ keycloakSmtpReconcile:
 
 # Tenant Service
 tenantService:
+  # Finishing Träger deletions (ORISO-Admin#1525): UserService's nightly job removes a Träger in
+  # deletion once nothing references it, as the RUNTIME actor with tenant-deletion. With task
+  # identities on, a TenantService image older than that change refuses to start once
+  # TENANT_DELETION is required. Switch this on in the release that deploys that image.
+  tenantDeletionFinishEnabled: false
   # Pins for TenantService's constrained OWN-server system-mail endpoint.
   # Blank values deny every call. Operators set the actual Keycloak user `sub`
   # and token `azp` from the environment before enabling OWN-server delivery.
